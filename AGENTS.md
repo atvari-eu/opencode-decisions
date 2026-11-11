@@ -9,7 +9,7 @@ them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (573 tests, 28 files, ~7 s). That plus `typecheck` is the entire
+  (646 tests, 30 files, ~7 s). That plus `typecheck` is the entire
   check — there is no linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
 - Typecheck: `nix shell nixpkgs#bun -c bun install` once (dev deps), then
@@ -43,9 +43,16 @@ them here.
 
 - Fail closed. A missing credential, judge failure, timeout, or malformed
   answer never produces a "successful" judgment, and there is no fallback
-  chain between providers/endpoints. Status errors surface the endpoint's own
-  diagnostic (401 credential rejection, 402 funds, 403 free-tier/pairing
-  gate); new auth/HTTP code must preserve these readings.
+  chain between providers/endpoints. The `fallbacks` option may try another
+  judgment model on the same deployment, but only on retryable failures
+  (402/408/425/429, 5xx/outage, network/timeout); 401, 403, unknown-model
+  diagnostics, and caller aborts surface immediately, and an exhausted chain
+  throws the primary's diagnostic. The failed model is demoted for
+  `fallbackCooldownMs` (default 1 h; 0 disables) before it is retried; the
+  "using fallback" warning toast can be silenced with `fallbackNotify: false`,
+  while chain-exhausted errors still surface. Status errors surface the
+  endpoint's own diagnostic (401 credential rejection, 402 funds, 403
+  free-tier/pairing gate); new auth/HTTP code must preserve these readings.
 - Credentials: env override first, then the CLI store - the `opencode auth
   export` subprocess channel, falling back to a direct read-only read of
   the db-backed store (`src/store-db.ts`) when the subprocess is
