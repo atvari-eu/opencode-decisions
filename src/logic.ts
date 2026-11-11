@@ -182,6 +182,30 @@ export const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh"
 export const routableEffortLevels = (listed: readonly string[]): string[] =>
   EFFORT_ORDER.filter((level) => level !== "none" && listed.includes(level))
 
+/** A usable model reference for routing. Session.Info.model is optional on
+ * the host, so callers may need to recover it from the prompt event or the
+ * active agent's configured model. Accepts both `id` (Model.Ref) and
+ * `modelID` (candidate-shaped records) and drops incomplete entries. */
+export interface RoutingModelRef {
+  providerID: string
+  id: string
+  variant?: string
+}
+
+export function firstUsableModel(...refs: Array<any>): RoutingModelRef | null {
+  for (const ref of refs) {
+    if (!ref || typeof ref.providerID !== "string" || ref.providerID.length === 0) continue
+    const id = typeof ref.id === "string" ? ref.id : typeof ref.modelID === "string" ? ref.modelID : ""
+    if (id.length === 0) continue
+    return {
+      providerID: ref.providerID,
+      id,
+      ...(typeof ref.variant === "string" ? { variant: ref.variant } : {}),
+    }
+  }
+  return null
+}
+
 export const EFFORT_CRITERIA: Record<string, string> = {
   none: "No reasoning needed: a trivial lookup, formatting, one-line edit, or a follow-up with an obvious next action",
   minimal:
