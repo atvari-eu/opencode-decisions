@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   clampEffortLevels,
+  firstUsableModel,
   parseAgentProfiles,
   REVIEW_AGENT_CRITERIA,
   routeTurn,
@@ -177,6 +178,29 @@ describe("clampEffortLevels", () => {
     expect(clampEffortLevels(["none", "max"], { min: "medium", max: "high" })).toEqual(["max"])
     expect(clampEffortLevels(["medium", "high"], { max: "low" })).toEqual(["medium"])
     expect(clampEffortLevels([], { min: "medium" })).toEqual([])
+  })
+})
+
+describe("firstUsableModel", () => {
+  test("prefers session, then event, then agent refs", () => {
+    expect(
+      firstUsableModel(
+        { providerID: "openai", id: "gpt-6.1-sol", variant: "high" },
+        { providerID: "opencode", id: "deepseek-v4.1-flash-free" },
+        { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
+      ),
+    ).toEqual({ providerID: "openai", id: "gpt-6.1-sol", variant: "high" })
+    expect(
+      firstUsableModel(undefined, { providerID: "opencode", modelID: "deepseek-v4.1-flash-free" }),
+    ).toEqual({ providerID: "opencode", id: "deepseek-v4.1-flash-free" })
+    expect(firstUsableModel(undefined, null, { providerID: "opencode-go", id: "deepseek-v4.1-flash" })).toEqual({
+      providerID: "opencode-go",
+      id: "deepseek-v4.1-flash",
+    })
+  })
+
+  test("drops incomplete refs and returns null when none are usable", () => {
+    expect(firstUsableModel(undefined, null, {}, { providerID: "" }, { id: "x" })).toBeNull()
   })
 })
 

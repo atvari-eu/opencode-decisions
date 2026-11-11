@@ -81,6 +81,7 @@ import { runFind } from "./find"
 import { readStoreDbCredential, storeDbCandidates } from "./store-db"
 import {
   routableEffortLevels,
+  firstUsableModel,
   AUTO_PROVIDER,
   JEVS_ERROR_MARK,
   JEV_CONFIG_ERROR_MARK,
@@ -2055,6 +2056,9 @@ export default Plugin.define({
     // stance on host builds that leave Session.Info.agent empty (the prompt
     // event still carries it).
     const SESSION_AGENTS = new Map<string, string>()
+    // One diagnostic per session when Session.Info.model is missing and the
+    // hook has to recover the model from the active agent (or give up).
+    const SESSION_MODEL_FALLBACKS = new Set<string>()
     const pinKeyOf = (sessionID: string): string => `jev-model-pin/${sessionID}`
     // pins compat: hosts without storage.remove leave a durable record that
     // still loads empty-weight; the in-memory delete is what matters here.
@@ -2809,8 +2813,6 @@ export default Plugin.define({
           const session: any = unwrapEnvelope(
             await (ctx as any).session.get({ sessionID: event.sessionID }),
           )
-          const model = session?.model
-          if (!model?.providerID || !model?.id) return
           // The active agent is the user's stance signal (plan vs build vs a
           // custom subagent). Read it from the session; the prompt event's own
           // `agent` field is accepted as a fallback across host builds. An
@@ -2818,10 +2820,40 @@ export default Plugin.define({
           const agentID = [session?.agent, event?.agent].find(
             (value): value is string => typeof value === "string" && value.trim() !== "",
           )
-          if (agentID) SESSION_AGENTS.set(event.sessionID, agentID.trim())
-          const agentProfile: AgentRouteProfile | null = agentID
-            ? (agentProfiles.get(agentID.trim()) ?? null)
+          const resolvedAgentID = agentID?.trim()
+          if (resolvedAgentID) SESSION_AGENTS.set(event.sessionID, resolvedAgentID)
+          const agentProfile: AgentRouteProfile | null = resolvedAgentID
+            ? (agentProfiles.get(resolvedAgentID) ?? null)
             : null
+          // Session.Info.model is optional on the host (agent-only sessions
+          // omit it). Recover from the prompt event or the active agent's
+          // configured model so effort routing does not silently disappear.
+          let model = firstUsableModel(session?.model, event?.model)
+          if (!model && resolvedAgentID) {
+            try {
+              const agent: any = unwrapEnvelope(
+                await (ctx as any).agent?.get?.({
+                  agentID: resolvedAgentID,
+                  location: { directory: ctx.location.directory },
+                }),
+              )
+              model = firstUsableModel(agent?.model)
+            } catch (err: any) {
+              if (!SESSION_MODEL_FALLBACKS.has(event.sessionID)) {
+                SESSION_MODEL_FALLBACKS.add(event.sessionID)
+                console.log(
+                  `[jev] effort: session model missing; agent model lookup failed for ${resolvedAgentID}: ${String(err?.message ?? err)}`,
+                )
+              }
+            }
+          }
+          if (!model?.providerID || !model?.id) {
+            if (!SESSION_MODEL_FALLBACKS.has(event.sessionID)) {
+              SESSION_MODEL_FALLBACKS.add(event.sessionID)
+              console.log("[jev] effort: no session or agent model - skipping routing")
+            }
+            return
+          }
           // The auto model feature engages only where the user parked the
           // session on one of the plugin's entries. On any real model it must
           // not touch the turn at all unless `effort.mode: "always"` - the
