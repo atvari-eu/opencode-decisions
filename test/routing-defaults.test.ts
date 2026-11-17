@@ -8,6 +8,7 @@ import {
   DEFAULT_POOL_SPLITS,
   effectiveInputPrice,
   GO_PLANS,
+  GO_LIMITS_URL,
   isFreePoolModel,
   isLargePoolModel,
   MODEL_FACTS_MAX_ROWS,
@@ -918,42 +919,34 @@ describe("pool size and cost helpers", () => {
     expect(inputPriceHint({ cost: { output: 0.5 } })).toBe("")
   })
 
-  test("the Go docs table parses into model-name keys", () => {
-    const html = `
-      <div data-plan-panel="go"><div>
-        <table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
-        <tbody>
-          <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$60</strong></td></tr>
-          <tr><td>Claude Haiku 5.5 (≤ 100K tokens)</td><td>$0.10</td><td>$0.50</td><td>$0.01</td><td>$0.125</td><td><strong>$15</strong></td></tr>
-          <tr><td>DeepSeek V4.1 Flash (Off-Peak)</td><td>$0.15</td><td>$0.60</td><td>$0.003</td><td>-</td><td><strong>$100</strong></td></tr>
-          <tr><td>Beam Free</td><td>Free</td><td>Free</td><td>Free</td><td>-</td><td><strong>Unlimited</strong></td></tr>
-        </tbody></table>
-      </div></div>
-      <div data-plan-panel="go-plus"><div><table><tbody>
-        <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$180</strong></td></tr>
-      </tbody></table></div></div>`
-    const limits = parseGoMonthlyLimits(html)
-    // Catalog ids normalize to the same keys as the docs labels.
+  test("the Go models endpoint parses into model-id keys", () => {
+    const body = {
+      object: "list",
+      data: [
+        { id: "glm-5.3-flash", go: { monthly_usage: { go: 60, "go-plus": 180, "go-teams": 65 } } },
+        { id: "claude-haiku-5-5", go: { monthly_usage: { go: 15, "go-plus": 60, "go-teams": 20 } } },
+        { id: "deepseek-v4.1-flash", go: { monthly_usage: { go: 100, "go-plus": 200, "go-teams": 105 } } },
+        // Free models carry no `go` block, and a zero allowance is not one.
+        { id: "beam-free" },
+        { id: "broken", go: { monthly_usage: { go: 0 } } },
+      ],
+    }
+    const limits = parseGoMonthlyLimits(body)
     expect(limits.get(modelNameKey("glm-5.3-flash"))).toBe(60)
     expect(limits.get(modelNameKey("claude-haiku-5-5"))).toBe(15)
     expect(limits.get(modelNameKey("deepseek-v4.1-flash"))).toBe(100)
-    // Unlimited rows carry no dollar allowance, and only the base plan is read.
     expect(limits.get(modelNameKey("beam-free"))).toBeUndefined()
     expect(limits.size).toBe(3)
   })
 
-  test("the plan argument reads that plan's panel", () => {
-    const html = `
-      <div data-plan-panel="go"><div><table><tbody>
-        <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$60</strong></td></tr>
-      </tbody></table></div></div>
-      <div data-plan-panel="go-plus"><div><table><tbody>
-        <tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$180</strong></td></tr>
-      </tbody></table></div></div>`
-    expect(parseGoMonthlyLimits(html, "go").get(modelNameKey("glm-5.3-flash"))).toBe(60)
-    expect(parseGoMonthlyLimits(html, "go-plus").get(modelNameKey("glm-5.3-flash"))).toBe(180)
-    // A panel the page does not carry leaves the map empty (fail closed).
-    expect(parseGoMonthlyLimits(html, "go-teams").size).toBe(0)
+  test("the plan argument reads that plan's allowance", () => {
+    const body = {
+      data: [{ id: "glm-5.3-flash", go: { monthly_usage: { go: 60, "go-plus": 180 } } }],
+    }
+    expect(parseGoMonthlyLimits(body, "go").get(modelNameKey("glm-5.3-flash"))).toBe(60)
+    expect(parseGoMonthlyLimits(body, "go-plus").get(modelNameKey("glm-5.3-flash"))).toBe(180)
+    // A plan the body does not carry leaves the map empty (fail closed).
+    expect(parseGoMonthlyLimits(body, "go-teams").size).toBe(0)
   })
 
   test("goPlan parses only the three plan ids", () => {
@@ -969,10 +962,18 @@ describe("pool size and cost helpers", () => {
     expect(GO_PLANS).toEqual({ go: 10, "go-plus": 40, "go-teams": 20 })
   })
 
-  test("an unreadable Go docs page yields no allowances", () => {
+  test("the allowance source is the Go models endpoint", () => {
+    // This source already rotted once: the docs page it replaced lost its
+    // limits table and every load failed until a human noticed, so the URL
+    // the plugin fetches is pinned here rather than left implicit.
+    expect(GO_LIMITS_URL).toBe("https://opencode.ai/inference/go/v1/models")
+  })
+
+  test("an unreadable Go models body yields no allowances", () => {
     expect(parseGoMonthlyLimits("")).toEqual(new Map())
     expect(parseGoMonthlyLimits("<html><body>nope</body></html>")).toEqual(new Map())
-    expect(parseGoMonthlyLimits('<div data-plan-panel="go"><table></table></div>')).toEqual(new Map())
+    expect(parseGoMonthlyLimits(null)).toEqual(new Map())
+    expect(parseGoMonthlyLimits({ data: [{ id: "glm-5.3-flash" }] })).toEqual(new Map())
   })
 
   test("modelNameKey bridges catalog ids and docs labels", () => {

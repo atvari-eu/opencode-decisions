@@ -69,7 +69,7 @@ them here.
   UI-only signals ride the `jev-config` RPC events instead: `screen` for
   verdicts, `error` event-first for failed judged calls, `config` for the
   buffered init fault, `warning` for a degraded source (the Go monthly-limit
-  page), `scrub` for counts-only redaction hits, and `approval` for permission
+  source), `scrub` for counts-only redaction hits, and `approval` for permission
   resolutions. Rows are the fallback only when the host has no event surface.
   The init fault is persisted and replayed
   through `configFault` for late subscribers; TUI/panel subscriptions

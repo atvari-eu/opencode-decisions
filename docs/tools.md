@@ -68,7 +68,7 @@ Each UI-only event has a severity. `toasts` sets a **minimum severity** per even
 | `screen` | `warning` for flagged, `error` for unsafe/unavailable | a non-pass screen |
 | `error` | `error` | a failed judged call (one per 60 s window per title) |
 | `config` | `error` | one init deployment fault per changed config |
-| `warning` | `warning` | a degraded source: the OpenCode Go monthly-limit page could not be fetched or parsed, so routing falls back to list price |
+| `warning` | `warning` | a degraded source: the OpenCode Go monthly-limit source could not be fetched or parsed, so routing falls back to list price |
 | `scrub` | `warning` | secret-like tokens removed from a prompt or tool input |
 | `approval` | `error` for deny/gate, `warning` for a judgment failure | a refusal, gate hold, or failed judgment (allows/asks stay quiet) |
 

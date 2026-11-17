@@ -99,6 +99,7 @@ import {
   contextRows,
   DECISION_CATALOG_URL,
   deploymentFingerprint,
+  GO_LIMITS_URL,
   GO_PLANS,
   goAllowanceFactor,
   inputPriceHint,
@@ -466,7 +467,7 @@ let OPTIONS_MODEL: string | undefined = undefined
 // chain and endpoint are the default Console deployment's.
 let OPTIONS_PROVIDER: ProviderOption | undefined = undefined
 /** The selected OpenCode Go plan (the `goPlan` plugin option, base plan by
- * default). Decides which docs table the monthly allowances come from. */
+ * default). Decides which plan's monthly allowances are read. */
 let OPTIONS_GO_PLAN: GoPlan = "go"
 let RESOLVED_ENDPOINT: string | undefined = CONSOLE_ENDPOINT
 let RESOLVED_CHAIN: CredentialChain = credentialChain(undefined)
@@ -972,13 +973,13 @@ async function loadLeaderboard(ctx: any): Promise<void> {
 
 // The Go plan is flat-priced, so a model's included monthly usage changes its
 // effective price: the same token costs less when the plan covers more of it.
-// The model catalog carries no allowance, so the docs page is the only source.
-// It carries one table per plan; the `goPlan` plugin option selects one (the
-// base Go plan by default). The page is parsed once per process and remembered
-// per plan. A failed fetch or parse leaves the map empty - routing then ranks
+// The model catalog carries no allowance, so the Go models endpoint is the
+// only source: one JSON body listing every Go model with its per-plan
+// `monthly_usage`. The `goPlan` plugin option selects the plan (the base Go
+// plan by default). The body is fetched once per process and remembered per
+// plan. A failed fetch or parse leaves the map empty - routing then ranks
 // by list price, exactly as before - and raises one `warning` event so the
 // degradation stays visible without writing a transcript row.
-const GO_LIMITS_URL = "https://opencode.ai/v2/docs/console/go/"
 const GO_LIMITS_TTL = 24 * 60 * 60_000
 const GO_LIMITS_RETRY = 60 * 60_000
 let GO_LIMITS = new Map<string, number>()
@@ -1000,8 +1001,8 @@ async function loadGoLimits(warn?: WarningSink): Promise<void> {
     try {
       const response = await fetch(GO_LIMITS_URL, { signal: AbortSignal.timeout(10_000) })
       if (!response.ok) throw new Error(`opencode.ai answered ${response.status}`)
-      const limits = parseGoMonthlyLimits(await response.text(), plan)
-      if (limits.size === 0) throw new Error(`no monthly limits in the ${plan} docs table`)
+      const limits = parseGoMonthlyLimits(await response.json(), plan)
+      if (limits.size === 0) throw new Error(`no ${plan} monthly limits in the Go models endpoint`)
       GO_LIMITS = limits
       GO_LIMITS_PLAN = plan
       GO_LIMITS_AT = Date.now()

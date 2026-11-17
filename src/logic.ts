@@ -848,7 +848,7 @@ export interface PoolModel {
   cacheRatio?: number
   /** OpenCode Go's monthly allowance for this model, in USD of list-price
    * usage. The Go plan is flat-priced, so a larger allowance makes the same
-   * token cheaper; undefined when the docs table was unavailable. */
+   * token cheaper; undefined when the Go allowance source was unavailable. */
   monthlyLimitUsd?: number
   /** Monthly price of the Go plan whose allowance `monthlyLimitUsd` states;
    * set whenever that is, so the factor uses the subscribed plan's price. */
@@ -1067,13 +1067,13 @@ export function modelPrice(model: { inputCost?: number; outputCost?: number }): 
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode Go monthly allowances (docs parser)
+// OpenCode Go monthly allowances (Go models endpoint parser)
 // ---------------------------------------------------------------------------
 
-/** The OpenCode Go plans, keyed by the docs page's panel id, with each plan's
- * monthly price (USD): Go $10, Go Plus $40, Go Teams $20 per member. Every
- * plan's table states a model's included usage as a monthly dollar amount of
- * list-price tokens, so a plan priced at `GO_PLANS[plan]` buys
+/** The OpenCode Go plans, keyed by the endpoint's `go.monthly_usage` plan key,
+ * with each plan's monthly price (USD): Go $10, Go Plus $40, Go Teams $20 per
+ * member. Every plan states a model's included usage as a monthly dollar
+ * amount of list-price tokens, so a plan priced at `GO_PLANS[plan]` buys
  * `limit / GO_PLANS[plan]` times the listed price for that model. */
 export type GoPlan = "go" | "go-plus" | "go-teams"
 
@@ -1082,7 +1082,13 @@ export const GO_PLANS: Record<GoPlan, number> = { go: 10, "go-plus": 40, "go-tea
 /** The base Go plan's price, the default plan price for the allowance factor. */
 export const GO_PLAN_USD = GO_PLANS.go
 
-/** Parses the `goPlan` plugin option. Anything but the three panel ids returns
+/** The Go models endpoint, the only source for the monthly allowances: it
+ * carries one `go.monthly_usage` per plan, keyed by the same model ids the
+ * catalog lists. The docs page this used to scrape dropped its limits table
+ * without any test noticing, which is why the source is a pinned constant. */
+export const GO_LIMITS_URL = "https://opencode.ai/inference/go/v1/models"
+
+/** Parses the `goPlan` plugin option. Anything but the three plan keys returns
  * undefined - the plugin keeps the base plan and logs a hint, never guesses. */
 export function parseGoPlanOption(raw: unknown): GoPlan | undefined {
   if (typeof raw !== "string") return undefined
@@ -1093,7 +1099,7 @@ export function parseGoPlanOption(raw: unknown): GoPlan | undefined {
 
 /** A model name reduced to a comparable key: parenthetical qualifiers dropped
  * (`(Off-Peak)`, `(≤ 100K tokens)`), punctuation collapsed to dashes. Catalog
- * ids and docs labels normalize to the same key (`Claude Haiku 5.5` and
+ * ids and display labels normalize to the same key (`Claude Haiku 5.5` and
  * `claude-haiku-5-5` both become `claude-haiku-5-5`). */
 export function modelNameKey(name: string): string {
   return name
@@ -1103,42 +1109,24 @@ export function modelNameKey(name: string): string {
     .replace(/^-+|-+$/g, "")
 }
 
-const stripTags = (html: string): string =>
-  html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-
-/** Reads a `$12.34` cell; undefined for `-`, `Unlimited`, or anything else. */
-function usdCell(text: string): number | undefined {
-  const match = /^\$(\d+(?:\.\d+)?)$/.exec(text.replace(/\s+/g, ""))
-  if (!match) return undefined
-  const value = Number(match[1])
-  return Number.isFinite(value) && value > 0 ? value : undefined
-}
-
-/** Parses the selected Go plan's monthly limit table out of the console docs
- * page (https://opencode.ai/v2/docs/console/go/). Returns model-name key ->
- * monthly limit in USD. Only the selected plan's panel is read (the three
- * plans carry the same token prices with different limits). An unreadable
- * page yields an empty map - the caller then ranks by list price, exactly as
- * if no allowance data existed. */
-export function parseGoMonthlyLimits(html: string, plan: GoPlan = "go"): Map<string, number> {
+/** Parses the selected plan's monthly allowances out of the Go models
+ * endpoint body (https://opencode.ai/inference/go/v1/models). Each entry
+ * carries its model id and `go.monthly_usage`, the per-plan monthly dollar
+ * allowance; the free models carry no `go` block at all. Returns model-id key
+ * -> monthly limit in USD, for the selected plan only (the plans share token
+ * prices and differ only in the allowance). An unreadable body, or one without
+ * that plan's key, yields an empty map - the caller then ranks by list price,
+ * exactly as if no allowance data existed. */
+export function parseGoMonthlyLimits(body: unknown, plan: GoPlan = "go"): Map<string, number> {
   const limits = new Map<string, number>()
-  const marker = `data-plan-panel="${plan}"`
-  const start = html.indexOf(marker)
-  if (start < 0) return limits
-  const rest = html.slice(start + marker.length)
-  const next = rest.indexOf('data-plan-panel="')
-  const panel = next < 0 ? rest : rest.slice(0, next)
-  for (const row of panel.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) {
-    const cells = [...row[1]!.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((cell) => stripTags(cell[1]!))
-    // Model, input, output, cached read, cached write, monthly limit.
-    if (cells.length < 6) continue
-    const name = cells[0]!
-    const limit = usdCell(cells[5]!)
-    if (name === "" || limit === undefined) continue
-    const key = modelNameKey(name)
+  const data = (body as { data?: unknown } | null | undefined)?.data
+  if (!Array.isArray(data)) return limits
+  for (const raw of data) {
+    const row = raw as { id?: unknown; go?: { monthly_usage?: Record<string, unknown> } } | null | undefined
+    const id = typeof row?.id === "string" ? row.id : ""
+    const limit = row?.go?.monthly_usage?.[plan]
+    if (id === "" || typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) continue
+    const key = modelNameKey(id)
     if (key !== "" && !limits.has(key)) limits.set(key, limit)
   }
   return limits
