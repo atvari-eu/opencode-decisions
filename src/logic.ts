@@ -586,6 +586,14 @@ export function effectiveEffortMode(
   return profile?.effortMode ?? globalMode
 }
 
+/** Whether any agent profile opts into effort routing with `always`. Gates
+ * the host-side hook setup: a per-agent override must be able to engage
+ * routing even when the global mode never does. */
+export function anyProfileEffortAlways(profiles: Iterable<AgentRouteProfile>): boolean {
+  for (const profile of profiles) if (profile?.effortMode === "always") return true
+  return false
+}
+
 // ---------------------------------------------------------------------------
 // Agent profiles (`agents`): the session's active OpenCode agent refines a
 // routing turn. The agent is the stance the user already chose, so it can

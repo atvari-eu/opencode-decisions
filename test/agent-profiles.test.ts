@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test"
 import {
   clampEffortLevels,
   effectiveEffortMode,
+  anyProfileEffortAlways,
   parseAgentProfiles,
   REVIEW_AGENT_CRITERIA,
   routeTurn,
@@ -111,6 +112,15 @@ describe("effectiveEffortMode", () => {
     expect(effectiveEffortMode("always", { id: "build", effortMode: "off" })).toBe("off")
     expect(effectiveEffortMode("always", { id: "build" })).toBe("always")
     expect(effectiveEffortMode("pair", null)).toBe("pair")
+  })
+})
+
+describe("anyProfileEffortAlways", () => {
+  test("true only when a profile opts into always", () => {
+    expect(anyProfileEffortAlways([])).toBe(false)
+    expect(anyProfileEffortAlways([{ id: "build", effortMode: "off" }])).toBe(false)
+    expect(anyProfileEffortAlways([{ id: "build" }])).toBe(false)
+    expect(anyProfileEffortAlways([{ id: "coordinator", effortMode: "always" }])).toBe(true)
   })
 })
 
