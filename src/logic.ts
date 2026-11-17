@@ -1815,15 +1815,29 @@ export function defaultPoolSplit(
 ): PoolSplit {
   const defaultCfg = options.default ?? DEFAULT_POOL_SPLITS.default
   const reviewCfg = options.review ?? DEFAULT_POOL_SPLITS.review
-  const usable = models.filter((model) => !needsTrainingOptIn(model, options.consent))
+  const { defaultWindow, review } = poolWindows(models, leaderboard, defaultCfg, reviewCfg, options.consent)
+  return { default: poolSlots(defaultWindow, defaultCfg, strengthScores(defaultWindow)), review }
+}
+
+/** The two windows the built-in pair draws from: review's window with its own
+ * slots filled first, then the default window with the review picks removed.
+ * Shared by `defaultPoolSplit` and `rankPoolOrders`, so the ranking's strong
+ * axis is scored over exactly the universe the default cut scores. */
+function poolWindows(
+  models: readonly PoolModel[],
+  leaderboard: readonly string[],
+  defaultCfg: PoolSplitConfig,
+  reviewCfg: PoolSplitConfig,
+  consent?: TrainingConsent,
+): { defaultWindow: PoolModel[]; review: PoolModel[] } {
+  const usable = models.filter((model) => !needsTrainingOptIn(model, consent))
   const reviewWindow = poolWindow(usable, leaderboard, reviewCfg)
   const review = poolSlots(reviewWindow, reviewCfg, strengthScores(reviewWindow))
   const reviewKeys = new Set(review.map(candidateKey))
   const defaultWindow = poolWindow(usable, leaderboard, defaultCfg).filter(
     (model) => !reviewKeys.has(candidateKey(model)),
   )
-  const defaultSplit = poolSlots(defaultWindow, defaultCfg, strengthScores(defaultWindow))
-  return { default: defaultSplit, review }
+  return { defaultWindow, review }
 }
 
 /** One independent cut over the ranked Console window: what an entry's inlined
