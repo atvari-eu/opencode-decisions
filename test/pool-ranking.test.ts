@@ -20,27 +20,26 @@ const benched = (
   ],
 })
 
-// g2 tops at 60 inside the window, so P (10/20 + 60/60) outscores Q (20/20 +
-// 50/60) on the full catalog, but the window-relative scores flip them: g1
-// maxes at 20, which lifts Q's g1 share to 1.
+// g1 maxes at 20 inside the window, which lifts Q's g1 share to 1, so the
+// window-relative scores rank Q over P; on the full catalog P would win.
 const P = benched("p", 10, 60)
 const Q = benched("q", 20, 50)
 const R = benched("r", 5, 5)
-// Not on the leaderboard, so outside every window, yet catalog-wide its
-// benchmark tops the pool (0.6).
+// Not on the leaderboard, so outside the window; its benchmark would top the
+// full catalog (0.6) but the ranking must not show it.
 const T = benched("t", 100, 30)
 const POOL = [P, Q, R, T]
 
 const noReview = { cheap: 0, popular: 0, strong: 0, topK: 18, minContext: 0 }
 
 describe("rankPoolOrders", () => {
-  test("strong is window-first: outside-window strength cannot jump the line", () => {
+  test("ranks only the routing window: outside-window models are invisible", () => {
     const orders = rankPoolOrders(POOL, ["p", "q", "r"], { review: noReview })
-    // The window is the leaderboard top 18; T is unranked and stays last even
-    // though its catalog-wide benchmark score is the pool's highest.
-    expect(orders.strongWindow).toBe(3)
-    expect(orders.strong.map((m) => m.modelID)).toEqual(["q", "p", "r", "t"])
-    expect(orders.window.map((m) => m.modelID)).toEqual(["p", "q", "r"])
+    // The window is the leaderboard top 18; T is unranked and must not appear
+    // even though its catalog-wide benchmark score is the pool's highest.
+    expect(orders.cheap.map((m) => m.modelID)).toEqual(["p", "q", "r"])
+    expect(orders.popular.map((m) => m.modelID)).toEqual(["p", "q", "r"])
+    expect(orders.strong.map((m) => m.modelID)).toEqual(["q", "p", "r"])
   })
 
   test("the first strong entry equals poolCut's pick over the same window", () => {
@@ -49,10 +48,9 @@ describe("rankPoolOrders", () => {
     expect(cut.map(candidateKey)).toEqual([candidateKey(orders.strong[0]!)])
   })
 
-  test("review picks are subtracted from the strong window like the cut does", () => {
+  test("review picks are subtracted from the window like the default cut does", () => {
     // Six equal-cost models; the built-in review cut (1 popular + 2 strong)
-    // takes a, d and e, so the default window the strong axis scores is
-    // b, c and f.
+    // takes a, d and e, so the window the ranking shows is b, c and f.
     const mk = (modelID: string, g: number) => ({
       providerID: "opencode",
       modelID,
@@ -67,12 +65,13 @@ describe("rankPoolOrders", () => {
     const board = ["a", "b", "c", "d", "e", "f"]
     const orders = rankPoolOrders(pool, board)
     const split = defaultPoolSplit(pool, board)
-    expect(orders.strongWindow).toBe(3)
-    expect(orders.strong.map((m) => m.modelID)).toEqual(["b", "c", "f", "d", "e", "a"])
+    expect(orders.cheap.map((m) => m.modelID)).toEqual(["b", "c", "f"])
+    expect(orders.popular.map((m) => m.modelID)).toEqual(["b", "c", "f"])
+    expect(orders.strong.map((m) => m.modelID)).toEqual(["b", "c", "f"])
     // The default cut's strong pick is the strongest of its window's
     // remainder, so it sits at its window-relative strength position.
     expect(split.default.filter((m) => m.poolSlot === "strong").map((m) => m.modelID)).toEqual(["f"])
-    expect(orders.strong.findIndex((m) => m.modelID === "f")).toBeLessThan(orders.strongWindow)
+    expect(orders.strong[2]!.modelID).toBe("f")
   })
 
   test("cheap ties by model id and orders unknown costs last", () => {
@@ -80,16 +79,21 @@ describe("rankPoolOrders", () => {
     const a = benched("a", 1, 1)
     const c = benched("c", 1, 1, { inputCost: 2 })
     const noPrice = { providerID: "opencode", modelID: "z" }
-    const orders = rankPoolOrders([b, a, c, noPrice], [])
+    // No leaderboard: the window fails open to the whole pool by cost.
+    const orders = rankPoolOrders([b, a, c, noPrice], [], { review: noReview })
     expect(orders.cheap.map((m) => m.modelID)).toEqual(["a", "b", "c", "z"])
+    expect(orders.strong.map((m) => m.modelID)).toEqual(["a", "b", "c", "z"])
   })
 
-  test("popular matches the leaderboard through canonical ids", () => {
+  test("popular is the window in leaderboard order, canonical ids matched", () => {
     const x = benched("mx", 1, 1, { canonicalID: "lab/mx-upstream" })
     const y = benched("other", 1, 1)
     const z = benched("mz", 1, 1)
-    const orders = rankPoolOrders([z, x, y], ["mx-upstream", "other"])
-    expect(orders.popular.map((m) => m.modelID)).toEqual(["mx", "other", "mz"])
+    const orders = rankPoolOrders([z, x, y], ["mx-upstream", "other"], { review: noReview })
+    // The window matches x through its canonical id; z is unranked and stays
+    // out of every list.
+    expect(orders.popular.map((m) => m.modelID)).toEqual(["mx", "other"])
+    expect(orders.cheap.map((m) => m.modelID)).toEqual(["mx", "other"])
   })
 
   test("consent-blocked models are listed, never ranked", () => {
@@ -101,8 +105,6 @@ describe("rankPoolOrders", () => {
     expect(orders.cheap.map((m) => m.modelID)).toEqual(["p"])
     expect(orders.popular.map((m) => m.modelID)).toEqual(["p"])
     expect(orders.strong.map((m) => m.modelID)).toEqual(["p"])
-    expect(orders.strongWindow).toBe(1)
-    expect(orders.window.map((m) => m.modelID)).toEqual(["p"])
     expect(orders.consentBlocked.map((m) => m.modelID)).toEqual(["p-free"])
   })
 
@@ -111,7 +113,6 @@ describe("rankPoolOrders", () => {
     expect(orders.cheap).toEqual([])
     expect(orders.popular).toEqual([])
     expect(orders.strong).toEqual([])
-    expect(orders.strongWindow).toBe(0)
     expect(orders.consentBlocked).toEqual([])
   })
 })

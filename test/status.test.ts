@@ -195,8 +195,6 @@ describe("rankingSection", () => {
     cheap: ["opencode/cheap", "opencode/fast", "opencode/strong"],
     popular: ["opencode/fast", "opencode/strong", "opencode/cheap"],
     strong: ["opencode/strong", "opencode/fast", "opencode/cheap"],
-    strongWindow: 2,
-    window: ["opencode/fast", "opencode/strong"],
     consentBlocked: [] as string[],
   }
 
@@ -208,36 +206,32 @@ describe("rankingSection", () => {
     const section = rankingSection(RANKING, false)!
     expect(section.title).toBe("pool ranking")
     expect(section.lines).toHaveLength(1)
-    expect(section.lines[0]!.text).toBe(
-      "3 models · 2 in window · cheap / popular / strong · press p to expand",
-    )
+    expect(section.lines[0]!.text).toBe("3 models · cheap / popular / strong · press p to expand")
   })
 
   test("collapsed counts consent-blocked models", () => {
     const section = rankingSection({ ...RANKING, consentBlocked: ["opencode/promo"] }, false)!
     expect(section.lines[0]!.text).toBe(
-      "3 models · 2 in window · cheap / popular / strong · 1 consent-blocked · press p to expand",
+      "3 models · cheap / popular / strong · 1 consent-blocked · press p to expand",
     )
   })
 
-  test("expanded marks the window entries in every axis", () => {
+  test("expanded lists every window model per axis, in order", () => {
     const section = rankingSection(RANKING, true)!
     const text = section.lines.map((line) => line.text)
     expect(text).toEqual([
       "leaderboard: live",
-      "* = inside the routing window (2); those are the picks the cuts draw from",
       "cheap:",
       "1. opencode/cheap",
-      "2. opencode/fast *",
-      "3. opencode/strong *",
+      "2. opencode/fast",
+      "3. opencode/strong",
       "popular:",
-      "1. opencode/fast *",
-      "2. opencode/strong *",
+      "1. opencode/fast",
+      "2. opencode/strong",
       "3. opencode/cheap",
       "strong:",
-      "1. opencode/strong *",
-      "2. opencode/fast *",
-      "outside the default window:",
+      "1. opencode/strong",
+      "2. opencode/fast",
       "3. opencode/cheap",
     ])
   })
@@ -248,15 +242,9 @@ describe("rankingSection", () => {
     expect(text[text.length - 1]!).toBe("consent-blocked: opencode/promo, opencode/free")
   })
 
-  test("no divider when every strong entry is inside the window", () => {
-    const section = rankingSection({ ...RANKING, strongWindow: 3, window: RANKING.cheap }, true)!
-    const text = section.lines.map((line) => line.text)
-    expect(text).not.toContain("outside the default window:")
-  })
-
   test("an empty ranking states the leaderboard state", () => {
     const section = rankingSection(
-      { source: "none", cheap: [], popular: [], strong: [], strongWindow: 0, window: [], consentBlocked: [] },
+      { source: "none", cheap: [], popular: [], strong: [], consentBlocked: [] },
       false,
     )!
     expect(section.lines[0]!.text).toBe("0 models · leaderboard none")
@@ -279,6 +267,6 @@ describe("rankingSection", () => {
   test("copy text carries the expanded ranking", () => {
     const text = statusText({ ...STATUS, ranking: RANKING }, [], Date.now(), true)
     expect(text).toContain("pool ranking")
-    expect(text).toContain("outside the default window:")
+    expect(text).toContain("1. opencode/strong")
   })
 })

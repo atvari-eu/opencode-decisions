@@ -99,10 +99,9 @@ function poolLines(pool: JevStatusPool): StatusLine[] {
 }
 
 /** The expandable pool-ranking section: one summary line while collapsed, or
- * the pool's usable models ordered by each pool axis (the strong axis leads
- * with the default cut's window, the rest marked as outside it) plus the
- * consent-blocked models the ordered lists exclude. Absent when the snapshot
- * carries no ranking (no Console chat provider). */
+ * the default cut's routing window ordered by each pool axis (consent-blocked
+ * models listed separately). Absent when the snapshot carries no ranking (no
+ * Console chat provider). */
 export function rankingSection(
   ranking: JevStatusRanking | undefined,
   expanded: boolean,
@@ -116,7 +115,6 @@ export function rankingSection(
   if (!expanded) {
     const n = ranking.cheap.length
     const blocked = ranking.consentBlocked.length > 0 ? ` · ${ranking.consentBlocked.length} consent-blocked` : ""
-    const inWindow = ranking.window.length > 0 ? ` · ${ranking.window.length} in window` : ""
     return {
       title: "pool ranking",
       lines: [
@@ -124,31 +122,16 @@ export function rankingSection(
           text:
             n === 0
               ? `${n} models · leaderboard ${ranking.source}`
-              : `${n} models${inWindow} · cheap / popular / strong${blocked} · press p to expand`,
+              : `${n} models · cheap / popular / strong${blocked} · press p to expand`,
           muted: n === 0,
         },
       ],
     }
   }
-  const inWindow = new Set(ranking.window)
-  const mark = (id: string): string => (inWindow.has(id) ? `${id} *` : id)
-  const lines: StatusLine[] = [
-    { text: `leaderboard: ${ranking.source}`, muted: true },
-    {
-      text: `* = inside the routing window (${ranking.window.length}); those are the picks the cuts draw from`,
-      muted: true,
-    },
-  ]
+  const lines: StatusLine[] = [{ text: `leaderboard: ${ranking.source}`, muted: true }]
   for (const [name, ids] of axes) {
     lines.push({ text: `${name}:` })
-    ids.forEach((id, index) => {
-      // The strong axis is window-first: everything after the window part is
-      // only catalog-wide order, not the strength the picks compare.
-      if (name === "strong" && index === ranking.strongWindow) {
-        lines.push({ text: "outside the default window:", muted: true })
-      }
-      lines.push({ text: `${index + 1}. ${mark(id)}`, muted: true })
-    })
+    ids.forEach((id, index) => lines.push({ text: `${index + 1}. ${id}`, muted: true }))
   }
   if (ranking.consentBlocked.length > 0) {
     lines.push({ text: `consent-blocked: ${joined(ranking.consentBlocked)}`, muted: true })

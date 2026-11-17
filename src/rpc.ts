@@ -78,25 +78,20 @@ export interface JevStatusAuth {
   endpointOverride: boolean
 }
 
-/** Every Console pool model ranked by each source axis, for the status
- * panel's expandable ranking. Each list is the pool's usable
- * opencode/opencode-go catalog (one entry per id, consent-blocked models
- * excluded) ordered by one axis: `cheap` by ascending real cost, `popular` by
- * public leaderboard position, `strong` window-first (the default cut's
- * window by its own strength scores, then the rest by catalog-wide scores).
- * `consentBlocked` lists the models the ordered lists exclude because the
- * Console would refuse them under the workspace's training switches. */
+/** The default cut's routing window ranked by each source axis, for the
+ * status panel's expandable ranking. Each list is that window (the catalog
+ * matched to the leaderboard, truncated to topK, context-floored, and minus
+ * the review cut's picks) ordered by one axis: `cheap` by ascending real
+ * cost, `popular` by public leaderboard position, `strong` by the same
+ * window-relative benchmark scores the default cut compares.
+ * `consentBlocked` lists the models the window excludes because the Console
+ * would refuse them under the workspace's training switches. */
 export interface JevStatusRanking {
-  /** The leaderboard fetch state behind the popular axis. */
+  /** The leaderboard fetch state behind the window. */
   source: "live" | "snapshot" | "none" | "unknown"
   cheap: string[]
   popular: string[]
   strong: string[]
-  /** Length of the leading window-relative part of `strong`. */
-  strongWindow: number
-  /** The routing window itself (the default cut's universe), so the panel
-   * can mark which entries the cut can actually pick. */
-  window: string[]
   consentBlocked: string[]
 }
 
@@ -312,11 +307,9 @@ const methods = {
             cheap: { type: "array", items: STRING },
             popular: { type: "array", items: STRING },
             strong: { type: "array", items: STRING },
-            strongWindow: { type: "number" },
-            window: { type: "array", items: STRING },
             consentBlocked: { type: "array", items: STRING },
           },
-          required: ["source", "cheap", "popular", "strong", "strongWindow", "window", "consentBlocked"],
+          required: ["source", "cheap", "popular", "strong", "consentBlocked"],
           additionalProperties: false,
         },
       },
