@@ -141,7 +141,11 @@ export function statusSections(
   const health: StatusLine[] = [
     {
       text: status.health.ok
-        ? "deployment: ok (init ping)"
+        ? status.health.serving && status.health.serving !== effective
+          ? `deployment: ok (serving ${status.health.serving}; ${effective} ${
+              status.health.primaryChecked === false ? "unchecked" : "faulted"
+            })`
+          : "deployment: ok (init ping)"
         : `deployment: FAULT - ${status.health.fault ?? "unknown"}`,
     },
   ]

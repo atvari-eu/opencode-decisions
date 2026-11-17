@@ -9,7 +9,7 @@ them here.
 ## Commands
 
 - `bun` is not on PATH: run tests as `nix shell nixpkgs#bun -c bun test`
-  (646 tests, 30 files, ~7 s). That plus `typecheck` is the entire
+  (664 tests, 31 files, ~8 s). That plus `typecheck` is the entire
   check — there is no linter, formatter, codegen, or CI config to hunt
   for, and no build step (OpenCode loads `src/index.ts` directly).
 - Typecheck: `nix shell nixpkgs#bun -c bun install` once (dev deps), then
@@ -47,10 +47,15 @@ them here.
   judgment model on the same deployment, but only on retryable failures
   (402/408/425/429, 5xx/outage, network/timeout); 401, 403, unknown-model
   diagnostics, and caller aborts surface immediately, and an exhausted chain
-  throws the primary's diagnostic. The failed model is demoted for
+  throws the primary's diagnostic (a demoted primary's own failure is kept
+  and handed back so this holds while it cools down). The failed model is
+  demoted for
   `fallbackCooldownMs` (default 1 h; 0 disables) before it is retried; the
   "using fallback" warning toast can be silenced with `fallbackNotify: false`,
-  while chain-exhausted errors still surface. Status errors surface the
+  while chain-exhausted errors still surface. The warning rides the
+  `warning` event only (no row fallback on hosts without the event
+  surface); `/jev-status` names the serving model so a silenced warning
+  keeps one signal. Status errors surface the
   endpoint's own diagnostic (401 credential rejection, 402 funds, 403
   free-tier/pairing gate); new auth/HTTP code must preserve these readings.
 - Credentials: env override first, then the CLI store - the `opencode auth
@@ -76,7 +81,8 @@ them here.
   UI-only signals ride the `jev-config` RPC events instead: `screen` for
   verdicts, `error` event-first for failed judged calls, `config` for the
   buffered init fault, `warning` for a degraded source (the Go monthly-limit
-  page), `scrub` for counts-only redaction hits, and `approval` for permission
+  page) and the fallback notice, `scrub` for counts-only redaction hits, and
+  `approval` for permission
   resolutions. Rows are the fallback only when the host has no event surface.
   The init fault is persisted and replayed
   through `configFault` for late subscribers; TUI/panel subscriptions

@@ -21,10 +21,10 @@ Clean verdicts cost nothing: a passing screen, a delegated approval, or a likely
 ## Requirements
 
 - [OpenCode 2](https://opencode.ai/v2/docs)
-- Access to a decision-model deployment; the plugin speaks the System One interface. With the default Console endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`, then your `opencode auth login` session, then the legacy auth store. Other deployments resolve from your provider config at startup. Paid models bill the responsible deployment's account (402 on empty funds, never retried elsewhere).
+- Access to a decision-model deployment; the plugin speaks the System One interface. With the default Console endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`, then your `opencode auth login` session, then the legacy auth store. Other deployments resolve from your provider config at startup. Paid models bill the responsible deployment's account (402 on empty funds; a configured fallback model on the same deployment may still be tried).
 - No specific model provider is required; the plugin only adds tools and guards around your existing setup.
 
-The deployment is ping-verified at plugin start, and faults fail every judged feature closed. Details: [Provider & credentials](docs/provider.md).
+The deployment is ping-verified at plugin start, and a fault that leaves no usable judgment model (chain primary and fallbacks alike) fails every judged feature closed. Details: [Provider & credentials](docs/provider.md).
 
 ## Install
 

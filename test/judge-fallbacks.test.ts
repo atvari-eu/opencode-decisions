@@ -6,11 +6,15 @@ import { describe, expect, test } from "bun:test"
 import {
   FALLBACK_COOLDOWN_MS_DEFAULT,
   FALLBACK_COOLDOWN_MS_MAX,
+  classifyJevFailure,
   judgeFailureRetryable,
+  noteFailure,
   parseFallbackCooldownMs,
   parseFallbackNotify,
   parseModelChain,
   runModelChain,
+  selectRunnableChain,
+  shouldNotifyFallback,
   type ModelVerdictLike,
 } from "../src/logic"
 
@@ -100,6 +104,67 @@ describe("parseFallbackNotify", () => {
   })
 })
 
+describe("selectRunnableChain", () => {
+  test("a demoted model is skipped until its deadline expires", () => {
+    const cooldowns = new Map([["primary", 1000]])
+    expect(selectRunnableChain(["primary", "fallback"], cooldowns, 1000)).toEqual({
+      runnable: ["primary", "fallback"],
+      cooling: [],
+    })
+    expect(selectRunnableChain(["primary", "fallback"], cooldowns, 999)).toEqual({
+      runnable: ["fallback"],
+      cooling: [{ model: "primary", until: 1000 }],
+    })
+  })
+
+  test("the last member is always attempted", () => {
+    const cooldowns = new Map([
+      ["a", 5000],
+      ["b", 5000],
+    ])
+    expect(selectRunnableChain(["a", "b"], cooldowns, 0)).toEqual({
+      runnable: ["b"],
+      cooling: [{ model: "a", until: 5000 }],
+    })
+  })
+
+  test("an uncooled chain runs in order", () => {
+    expect(selectRunnableChain(["a", "b", "c"], new Map(), 0)).toEqual({
+      runnable: ["a", "b", "c"],
+      cooling: [],
+    })
+  })
+})
+
+describe("noteFailure", () => {
+  test("records the deadline for the cooldown window", () => {
+    const cooldowns = new Map<string, number>()
+    noteFailure(cooldowns, "a", 100, 60_000)
+    expect(cooldowns.get("a")).toBe(60_100)
+  })
+
+  test("a zero (disabled) cooldown records an already-expired deadline", () => {
+    const cooldowns = new Map<string, number>()
+    noteFailure(cooldowns, "a", 100, 0)
+    expect(selectRunnableChain(["a"], cooldowns, 100).runnable).toEqual(["a"])
+  })
+})
+
+describe("shouldNotifyFallback", () => {
+  test("a key notifies once, per session-and-model pair", () => {
+    const warned = new Set<string>()
+    expect(shouldNotifyFallback("s|a|b", warned)).toBe(true)
+    expect(shouldNotifyFallback("s|a|b", warned)).toBe(false)
+    expect(shouldNotifyFallback("s|a|c", warned)).toBe(true)
+  })
+
+  test("the warned set stays bounded", () => {
+    const warned = new Set<string>(Array.from({ length: 1001 }, (_, i) => `k${i}`))
+    expect(shouldNotifyFallback("new", warned)).toBe(true)
+    expect(warned.size).toBe(1)
+  })
+})
+
 describe("judgeFailureRetryable", () => {
   test("rate limits, funds, outages, timeouts, and network errors advance", () => {
     expect(judgeFailureRetryable("jev: upstream 429 - rate limited")).toBe(true)
@@ -109,6 +174,32 @@ describe("judgeFailureRetryable", () => {
     expect(judgeFailureRetryable("jev: upstream failed - service unavailable")).toBe(true)
     expect(judgeFailureRetryable("fetch failed")).toBe(true)
     expect(judgeFailureRetryable("The operation was aborted due to timeout")).toBe(true)
+  })
+
+  test("the Console 422 upstream wrap is an outage, never a credential class", () => {
+    expect(
+      judgeFailureRetryable("jev: upstream 422 - Upstream request failed: Endpoint is unavailable"),
+    ).toBe(true)
+    expect(classifyJevFailure("jev: upstream 422 - Upstream request failed: Endpoint is unavailable").kind).toBe(
+      "outage",
+    )
+  })
+
+  test("Bun's connection-refused wording and fetch cause codes advance", () => {
+    expect(
+      judgeFailureRetryable("Unable to connect. Is the computer able to access the url?"),
+    ).toBe(true)
+    expect(classifyJevFailure("Unable to connect. Is the computer able to access the url?").kind).toBe(
+      "outage",
+    )
+    expect(judgeFailureRetryable({ message: "x", cause: { code: "ECONNREFUSED" } })).toBe(true)
+    expect(judgeFailureRetryable({ message: "x", cause: { code: "EAI_AGAIN" } })).toBe(true)
+    expect(judgeFailureRetryable({ message: "x", cause: { code: "EACCES" } })).toBe(false)
+  })
+
+  test("a status-less non-transport failure stays fail-closed", () => {
+    expect(judgeFailureRetryable("jev: malformed response (no answers)")).toBe(false)
+    expect(classifyJevFailure("jev: malformed response (no answers)").kind).toBe("unknown")
   })
 
   test("credential, gate, and unknown-model failures stay fail-closed", () => {
@@ -202,6 +293,19 @@ describe("runModelChain", () => {
           )
         },
         retryable: judgeFailureRetryable,
+      }),
+    ).rejects.toThrow("primary rate limited")
+  })
+
+  test("a demoted primary's diagnostic is thrown when the rest of the chain exhausts", async () => {
+    await expect(
+      runModelChain(["fallback"], {
+        verify: async () => okVerdict(),
+        run: async () => {
+          throw new Error("jev: upstream 500 - fallback down")
+        },
+        retryable: judgeFailureRetryable,
+        priorPrimaryFault: new Error("jev: upstream 429 - primary rate limited"),
       }),
     ).rejects.toThrow("primary rate limited")
   })

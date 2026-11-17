@@ -42,11 +42,11 @@ Anything else is a fault: an unregistered provider, unreachable endpoint, or unv
 ```
 
 - The chain is the effective primary - a `/jev-models` session pin, else `model` / `JEV_MODEL` / the baked default - followed by the fallbacks, trimmed and de-duplicated in order.
-- Each fallback is ping-verified at startup and skipped when it does not answer, so a dead primary does not cost a failed judged call on every turn. A model that fails retryably during a judged call is demoted for the configured cooldown for the same reason.
+- Each fallback is ping-verified at startup and skipped when it does not answer, so a dead primary does not cost a failed judged call on every turn. A credential, gate, no-endpoint, or transport-level outage fault on the primary is deployment-wide and skips those pings (an endpoint that refuses connections or fails DNS answers for no model; a blackholed network still times out per member); a 5xx outage or a slow-model timeout stays per-model, so a healthy fallback can still be found. A model that fails retryably during a judged call is demoted for the configured cooldown for the same reason.
 - `fallbackCooldownMs` sets that demotion window in milliseconds: default `3600000` (1 h), `0` retries the failed model on the next judged call, and values above `86400000` are clamped to 24 h. Invalid values keep the default. The cooldown is in-memory and resets on reload/restart.
 - Only retryable failures advance: 402 (funds, where a free model may still answer), 408/425/429, 5xx/outage, and network or timeout errors. 401 credential rejection, 403 gate, unknown-model diagnostics, and caller aborts surface immediately - another model on the same deployment cannot fix them.
-- When a fallback answers, one warning toast per session and model pair names it. If the whole chain fails, the primary's diagnostic surfaces, preserving the single-model fail-closed behavior.
-- `fallbackNotify` (default `true`) controls that warning toast. Set it to `false` to silence only the "using fallback" warning; the console log and chain-exhausted error toasts remain.
+- When a fallback answers, one warning per session and model pair names it, delivered through the `jev-config` event surface (hosts without it see the console log only). If the whole chain fails, the primary's diagnostic surfaces, preserving the single-model fail-closed behavior (a demoted primary's own failure is kept for this).
+- `fallbackNotify` (default `true`) controls that warning. Set it to `false` to silence only the "using fallback" notice; the console log and chain-exhausted error toasts remain, and `/jev-status` names the serving model.
 - `/jev-models` still pins the session's primary; the configured fallbacks remain behind it.
 
 ## Credentials

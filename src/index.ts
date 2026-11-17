@@ -122,11 +122,14 @@ import {
   doneTranscript,
   doneVerdict,
   effectiveJevModel,
-  parseModelChain,
+  judgeFailureRetryable,
+  noteFailure,
   parseFallbackCooldownMs,
   parseFallbackNotify,
+  parseModelChain,
   runModelChain,
-  judgeFailureRetryable,
+  selectRunnableChain,
+  shouldNotifyFallback,
   emergencyRealModel,
   effortRoutingEnabled,
   type EffortMode,
@@ -1390,14 +1393,19 @@ async function checkDeployState(
       return { ok: false, fingerprint, fault: fault("unknown", "non-System One response") }
     }
     const message = (err as Error)?.message ?? String(err)
-    const { kind, detail } = classifyJevFailure(message)
+    const { kind, detail, status } = classifyJevFailure(message)
     // A deployment that answers 401/403 while no credential resolved is a
     // "no credential" fault (with the chain's remedy), not a generic
     // rejection; a keyless deployment answering 2xx is simply fine.
     if (!cred && (kind === "credential" || kind === "gate")) {
       return { ok: false, fingerprint, fault: fault("no-credential") }
     }
-    return { ok: false, fingerprint, fault: fault(kind, detail || message) }
+    const composed = fault(kind, detail || message)
+    // A status-less outage is transport-level: the endpoint refused or did
+    // not resolve, so it answers for no model and the startup fallback
+    // pings cannot help either. A 5xx outage stays per-model.
+    if (kind === "outage" && status === undefined) composed.transport = true
+    return { ok: false, fingerprint, fault: composed }
   }
 }
 
@@ -1729,11 +1737,16 @@ export default Plugin.define({
     )
     // Fallback members are ping-verified at startup too, so a dead primary
     // (rate limit, removed model, funds) is skipped without paying a failed
-    // judged call on every turn. Credential, gate, and no-endpoint faults are
-    // deployment-wide: pinging the rest cannot help.
+    // judged call on every turn. Credential, gate, no-endpoint, and a
+    // transport-level outage are deployment-wide: pinging the rest cannot
+    // help (a network that fails fast - refused connections, DNS failures -
+    // answers for no model; a blackholed network times out per member and
+    // still walks the chain). A 5xx outage or a slow-model timeout stays
+    // per-model so a healthy fallback can still be found.
     const deploymentWideFault =
       !deployCheck.ok &&
-      ["credential", "gate", "no-credential", "no-endpoint"].includes(deployCheck.fault.kind)
+      (["credential", "gate", "no-credential", "no-endpoint"].includes(deployCheck.fault.kind) ||
+        (deployCheck.fault.kind === "outage" && deployCheck.fault.transport === true))
     const fallbackHealth: Array<{ model: string; ok: boolean }> = []
     if (!deploymentWideFault) {
       for (const model of OPTIONS_FALLBACKS) {
@@ -2130,9 +2143,12 @@ export default Plugin.define({
 
     // A retryable judged failure demotes that model for the configured
     // cooldown, so a rate-limited primary does not cost an extra failed request
-    // on every turn. The last chain member is always attempted.
+    // on every turn. The last chain member is always attempted. The demoted
+    // primary's own failure is kept so an exhausted chain still throws the
+    // primary's diagnostic, as with a single-model config.
     const MODEL_COOLDOWN_MS = fallbackCooldownMs
     const modelCooldowns = new Map<string, number>()
+    const primaryFaults = new Map<string, Error>()
     const warnedFallbacks = new Set<string>()
 
     async function cachedJudge(
@@ -2140,7 +2156,7 @@ export default Plugin.define({
       state: unknown,
       signal?: AbortSignal,
       sessionID?: string,
-    ): Promise<{ reply: JevReply; cached: boolean; model: string }> {
+    ): Promise<{ reply: JevReply; cached: boolean }> {
       // The chain is the effective primary (a session pin wins over the
       // options/env/default) followed by the configured fallbacks. Every
       // member is deployment-verified; a retryable failure advances, a
@@ -2152,16 +2168,17 @@ export default Plugin.define({
       const chain = parseModelChain(OPTIONS_FALLBACKS, primary).models
       if (!RESOLVED_ENDPOINT) await lateResolveDeployment()
       const now = Date.now()
-      const runnable = chain.filter((model, index) => {
-        if (index === chain.length - 1) return true
-        const until = modelCooldowns.get(model) ?? 0
-        if (until <= now) return true
-        console.log(
-          `[jev] fallbacks: ${model} cooling down for ${Math.ceil((until - now) / 1000)}s`,
-        )
-        return false
-      })
+      const { runnable, cooling } = selectRunnableChain(chain, modelCooldowns, now)
+      for (const { model, until } of cooling) {
+        console.log(`[jev] fallbacks: ${model} cooling down for ${Math.ceil((until - now) / 1000)}s`)
+      }
       const outcome = await runModelChain(runnable, {
+        // Only while the primary is actually filtered by its cooldown: after
+        // it comes back, a fresh failure of its own must win over a stale
+        // stored diagnostic.
+        priorPrimaryFault: cooling.some((entry) => entry.model === primary)
+          ? primaryFaults.get(primary)
+          : undefined,
         verify: (model) => deployVerdict(model),
         run: async (model) => {
           if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal, model), cached: false }
@@ -2185,26 +2202,32 @@ export default Plugin.define({
           console.log(`[jev] fallbacks: skipping ${model} - ${reason}`)
         },
         fallback: (from, to, err) => {
-          modelCooldowns.set(from, Date.now() + MODEL_COOLDOWN_MS)
+          noteFailure(modelCooldowns, from, Date.now(), MODEL_COOLDOWN_MS)
+          if (from === primary) {
+            primaryFaults.set(primary, err instanceof Error ? err : new Error(String(err)))
+          }
           const detail = surfaceTitle(err) || "judgment failed"
           console.log(`[jev] fallbacks: ${from} failed (${detail}) - trying ${to}`)
         },
       })
       modelCooldowns.delete(outcome.model)
+      // The demoted primary's stored diagnostic survives the call that
+      // created it (the fallback answered, the primary is still cooling) and
+      // clears only when the primary itself serves again.
+      primaryFaults.delete(outcome.model)
       if (outcome.model !== primary) {
-        console.log(`[jev] fallbacks: serving judgments with ${outcome.model}`)
-        if (fallbackNotify.enabled) {
-          const warnKey = `${sessionID ?? ""}|${primary}|${outcome.model}`
-          if (!warnedFallbacks.has(warnKey)) {
-            if (warnedFallbacks.size > 1000) warnedFallbacks.clear()
-            warnedFallbacks.add(warnKey)
-            emitJevWarning(
-              `jev: judgment model ${primary} is unavailable; using ${outcome.model}`,
-            )
-          }
+        const warnKey = `${sessionID ?? ""}|${primary}|${outcome.model}`
+        const first = shouldNotifyFallback(warnKey, warnedFallbacks)
+        if (first) {
+          console.log(`[jev] fallbacks: serving judgments with ${outcome.model}`)
+        }
+        if (first && fallbackNotify.enabled) {
+          emitJevWarning(
+            `jev: judgment model ${primary} is unavailable; using ${outcome.model}`,
+          )
         }
       }
-      return { reply: outcome.value.reply, cached: outcome.value.cached, model: outcome.model }
+      return { reply: outcome.value.reply, cached: outcome.value.cached }
     }
 
     // runScreen dep: cachedJudge's reply shaped as { answers, cached }. The
@@ -2446,12 +2469,14 @@ export default Plugin.define({
               const pick = sessionID ? await pinOf(sessionID) : undefined
               const effective = pick || resolveModel()
               // Health reflects the whole judgment chain: a dead primary with a
-              // healthy fallback still serves judgments.
+              // healthy fallback still serves judgments, and `serving` names
+              // the member that does.
               const statusChain = parseModelChain(OPTIONS_FALLBACKS, effective).models
               const primaryVerdict = DEPLOY_VERDICTS.get(fingerprintOfModel(effective))
               const healthyModel = statusChain.find(
                 (model) => DEPLOY_VERDICTS.get(fingerprintOfModel(model))?.ok === true,
               )
+              const healthOk = healthyModel !== undefined
               let session: JevStatusInfo["session"] | undefined
               let doneNudges: number | undefined
               let agentFloor = 0
@@ -2533,14 +2558,18 @@ export default Plugin.define({
                 ...(session ? { session } : {}),
                 ...(auth ? { auth } : {}),
                 health: {
-                  ok: healthyModel !== undefined,
+                  ok: healthOk,
                   events: typeof (rpcRegistration as any)?.events?.emit === "function",
+                  ...(healthyModel ? { serving: healthyModel } : {}),
+                  // Whether the primary itself has a verdict: a restored pin
+                  // has no ping yet, which is "unchecked", not "faulted".
+                  primaryChecked: primaryVerdict !== undefined,
                   ...(primaryVerdict?.at ? { checkedAt: primaryVerdict.at } : {}),
-                  ...(primaryVerdict && !primaryVerdict.ok && primaryVerdict.fault?.message
-                    ? { fault: primaryVerdict.fault.message }
-                    : !primaryVerdict
-                      ? { fault: "deployment not checked yet" }
-                      : {}),
+                  // The fault names the primary's verdict and rides a faulted
+                  // chain only; a healthy chain shows its serving member.
+                  ...(!healthOk
+                    ? { fault: primaryVerdict?.fault?.message ?? "deployment not checked yet" }
+                    : {}),
                 },
                 models: describeModelRows(PICK_MODELS, (id) => {
                   const cached = DEPLOY_VERDICTS.get(fingerprintOfModel(id))

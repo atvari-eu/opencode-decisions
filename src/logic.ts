@@ -3530,6 +3530,56 @@ export function parseFallbackNotify(raw: unknown): { enabled: boolean; warning?:
   return { enabled: raw }
 }
 
+/**
+ * Which chain members may run now, given the per-model cooldown deadlines a
+ * demotion recorded. The last member is always attempted - something has to
+ * run - and a deadline at or before `now` re-admits its model.
+ */
+export function selectRunnableChain(
+  models: readonly string[],
+  cooldowns: ReadonlyMap<string, number>,
+  now: number,
+): { runnable: string[]; cooling: Array<{ model: string; until: number }> } {
+  const runnable: string[] = []
+  const cooling: Array<{ model: string; until: number }> = []
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index]!
+    const until = cooldowns.get(model) ?? 0
+    if (index === models.length - 1 || until <= now) {
+      runnable.push(model)
+      continue
+    }
+    cooling.push({ model, until })
+  }
+  return { runnable, cooling }
+}
+
+/**
+ * Demotes a model that failed retryably by recording its cooldown deadline.
+ * A zero (disabled-cooldown) window records an already-expired deadline, so
+ * the next call attempts the model again.
+ */
+export function noteFailure(
+  cooldowns: Map<string, number>,
+  model: string,
+  now: number,
+  cooldownMs: number,
+): void {
+  cooldowns.set(model, now + Math.max(0, cooldownMs))
+}
+
+/**
+ * Whether the "using fallback" warning for this key may emit: once per
+ * session-and-model pair. The bounded set lives in the caller and is capped
+ * at 1000 keys, the same guard the warned-rows path carries.
+ */
+export function shouldNotifyFallback(key: string, warned: Set<string>): boolean {
+  if (warned.has(key)) return false
+  if (warned.size > 1000) warned.clear()
+  warned.add(key)
+  return true
+}
+
 /** One deployment verdict, structurally compatible with the host-side
  * DeployVerdict (kept local so logic.ts stays host-free). */
 export interface ModelVerdictLike {
@@ -3551,15 +3601,23 @@ export interface ModelChainOptions<T> {
   skip?: (model: string, reason: string) => void
   /** Called when a retryable failure advances to the next model. */
   fallback?: (from: string, to: string, error: unknown) => void
+  /** The primary's own failure from an earlier call, handed back by the
+   * caller when the cooldown filter demoted the primary before this run.
+   * Chain exhaustion throws it so the configured primary's diagnostic
+   * survives its own demotion; it also outranks a skipped later member's
+   * ping reason, which would otherwise mask it. */
+  priorPrimaryFault?: Error
 }
 
 /**
- * Walks a judgment-model chain. Members whose deployment ping failed (or that
- * are cooling down) are skipped; the first healthy member runs. A retryable
- * judged failure advances to the next member, while credential, gate, model
- * and caller-abort failures surface immediately. When every member fails,
- * the first attempted member's diagnostic is thrown, preserving the
- * fail-closed wording a single-model config surfaces today.
+ * Walks a judgment-model chain. Members whose deployment ping failed (or
+ * that are cooling down) are skipped; the first healthy member runs. A
+ * retryable judged failure advances to the next member, while credential,
+ * gate, model and caller-abort failures surface immediately. When every
+ * member fails, the primary's diagnostic is thrown - the caller's
+ * priorPrimaryFault when the primary was demoted before the call, else the
+ * first attempted member's - preserving the fail-closed wording a
+ * single-model config surfaces today.
  */
 export async function runModelChain<T>(
   models: readonly string[],
@@ -3591,7 +3649,7 @@ export async function runModelChain<T>(
       options.fallback?.(model, next, error)
     }
   }
-  throw primaryFault ?? failures[0] ?? new Error(`jev: no judgment model available (${models.join(", ")})`)
+  throw options.priorPrimaryFault ?? primaryFault ?? failures[0] ?? new Error(`jev: no judgment model available (${models.join(", ")})`)
 }
 
 /** Short display form for the footer marker and toasts: strips the redundant
@@ -3841,13 +3899,21 @@ const MODEL_HINT = /model/i
 const MODEL_MISSING =
   /unavailable|not found|unknown|invalid|unsupported|not served|not (?:a|one of|known)|no such model|wrong model/i
 const OUTAGE_HINT = /upstream request failed|bad gateway|service unavailable/i
+/** Status-less transport failures: the fetch layer's own wording (Bun's
+ * connection refusal, Node's "fetch failed"), DNS and socket errors spelled
+ * out in the message. Timeouts are excluded on purpose: a slow model must
+ * not read as a deployment-wide outage at startup. */
+const NETWORK_HINT =
+  /fetch failed|unable to connect|network|connection|econn|enotfound|eai_again|ehostunreach|enetunreach|socket/i
 
 /** Classifies a jev endpoint failure text (jevAuthError form) so the init
  * deployment check and the error rows read the same vocabulary. The model
  * check is deliberately narrow: HTTP 400 with a model-relative diagnostic -
  * endpoint shape, funds and refusal kinds get their own buckets. The
  * Console's 422 "Upstream request failed" wrap is an outage, never a
- * credential class (no store re-read, see DESIGN.md). */
+ * credential class (no store re-read, see DESIGN.md). A status-less
+ * transport failure (the fetch could not reach the endpoint at all)
+ * classifies as outage: the endpoint is unreachable for every model. */
 export function classifyJevFailure(message: unknown): JevFailureClass {
   const text = typeof message === "string" ? message : String(message ?? "")
   const m = text.match(/jev: (?:upstream )?(\d{3})/)
@@ -3864,7 +3930,9 @@ export function classifyJevFailure(message: unknown): JevFailureClass {
           : status === 403
             ? "gate"
             : status === undefined
-              ? "unknown"
+              ? NETWORK_HINT.test(text)
+                ? "outage"
+                : "unknown"
               : OUTAGE_HINT.test(text) || status >= 500
                 ? "outage"
                 : "unknown"
@@ -3877,6 +3945,9 @@ export function classifyJevFailure(message: unknown): JevFailureClass {
  * outages, request timeouts, and network-level failures. Credential (401),
  * gate (403) and unknown-model (400) failures are deployment-wide and stay
  * fail-closed; caller aborts are handled by runModelChain, not this class.
+ * Network errors are read from the error's cause code when the runtime's
+ * message text misses the hint list (Bun words connection refusals its own
+ * way, Node says "fetch failed").
  */
 export function judgeFailureRetryable(message: unknown): boolean {
   const text =
@@ -3887,7 +3958,14 @@ export function judgeFailureRetryable(message: unknown): boolean {
   if (status !== undefined) {
     return status === 402 || status === 408 || status === 425 || status === 429 || status >= 500
   }
-  return /fetch failed|network|connection|ECONN|ETIMEDOUT|ENOTFOUND|socket|timed? ?out|upstream unavailable|upstream failed|service unavailable/i.test(
+  const code = (message as any)?.cause?.code
+  if (
+    typeof code === "string" &&
+    /^(?:ECONN|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|ETIMEDOUT|EAI_AGAIN)/.test(code)
+  ) {
+    return true
+  }
+  return /fetch failed|network|connection|unable to connect|ECONN|ETIMEDOUT|ENOTFOUND|socket|timed? ?out|upstream unavailable|upstream failed|service unavailable/i.test(
     text,
   )
 }
@@ -3899,6 +3977,9 @@ export interface DeploymentFault {
   /** Per-call wording, jevAuthError-shaped, so jevUserError classes it and
    * judged call sites surface exactly the same failure as a live outage. */
   surface: string
+  /** Set for a status-less transport outage: the endpoint refused or did not
+   * resolve, so it answers for no model and fallback pings cannot help. */
+  transport?: boolean
 }
 
 const hostOf = (endpoint: string): string => {

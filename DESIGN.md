@@ -1108,16 +1108,31 @@ fail-closed stance:
 - Only retryable failures advance: 402 (a free fallback may still answer),
   408/425/429, 5xx/outage, and network or timeout errors. The classification
   is `judgeFailureRetryable` over the same `classifyJevFailure` vocabulary
-  the init check and error rows use.
-- The whole chain is ping-verified at startup. A member that does not answer
+  the init check and error rows use; a status-less transport failure
+  (Node's "fetch failed", Bun's "Unable to connect...", the fetch cause
+  code) classifies as outage and carries a `transport` marker.
+- The whole chain is ping-verified at startup, except when the primary's
+  fault is deployment-wide (credential, gate, no endpoint, or a
+  transport-level outage: an endpoint that fails fast - refused connections,
+  DNS - answers for no model, so pinging the rest cannot help; a blackholed
+  network times out per member and still walks the chain) or the endpoint
+  resolves after the init check, which pings the primary alone. A 5xx
+  outage or a slow-model timeout stays per-model so a healthy fallback can
+  still be found. A member that does not answer
   is cached as faulted and skipped; the init config fault fires only when no
   member answers, and it keeps the primary's wording.
 - A judged call that fails retryably demotes that model for
   `fallbackCooldownMs` (default 1 h; 0 disables), so a rate-limited primary is
   not re-hit on every turn. The last member is always attempted - something has
   to run.
-- The first retryable failure advances and emits one warning toast per
+- The first retryable failure advances and emits one warning per
   session and model pair, naming both models; `fallbackNotify: false`
-  suppresses that toast. If the chain is exhausted, the primary's diagnostic
-  is thrown, so single-model callers see exactly the failure they saw before.
+  suppresses it (the warning rides the `jev-config` event surface, and
+  `/jev-status` names the serving model as the remaining signal). If the
+  chain is exhausted, the primary's diagnostic
+  is thrown, so single-model callers see exactly the failure they saw before;
+  when the cooldown filter demoted the primary before the call, its own
+  failure from the demotion is thrown (kept across fallback-served calls,
+  cleared when the primary serves again, and passed only while it is
+  actually filtered, so a fresh failure always wins over a stale one).
 
