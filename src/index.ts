@@ -76,6 +76,9 @@ import {
   messageChars,
   collectCalls,
   contextMessages,
+  longContextHeaders,
+  LONG_CONTEXT_BUDGETS,
+  oversizedRequest,
 } from "./compaction"
 import { runFind } from "./find"
 import { readStoreDbCredential, storeDbCandidates } from "./store-db"
@@ -647,6 +650,7 @@ async function jevRequest(
   state: unknown,
   signal: AbortSignal | undefined,
   model: string,
+  longContext: boolean,
 ): Promise<Response> {
   const ua = await hostClientUA()
   return fetch(resolveEndpoint(), {
@@ -655,6 +659,7 @@ async function jevRequest(
       ...(cred ? { Authorization: `Bearer ${cred.key}` } : {}),
       "Content-Type": "application/json",
       ...(ua ? { "User-Agent": ua } : {}),
+      ...longContextHeaders(longContext),
     },
     body: JSON.stringify({
       model,
@@ -688,6 +693,7 @@ async function jevJudgeInner(
   state: unknown,
   signal?: AbortSignal,
   model: string = resolveModel(),
+  longContext = false,
 ): Promise<JevReply> {
   const cred = await resolveCred()
   if (!cred) {
@@ -696,7 +702,12 @@ async function jevJudgeInner(
     )
   }
 
-  let response = await jevRequest(cred, questions, state, signal, model)
+  // Fail before the network call: the limits sit below Jev's documented
+  // 64k / 262k request caps because the token estimate is approximate.
+  const over = oversizedRequest(JSON.stringify({ state, questions: toQuestionMap(questions) }), longContext)
+  if (over) throw new Error(over)
+
+  let response = await jevRequest(cred, questions, state, signal, model, longContext)
   let text = await response.text()
   // A cached CLI-store key can expire or rotate between calls. On a
   // credential-class rejection (401, or a worn-credential diagnostic - see
@@ -713,7 +724,7 @@ async function jevJudgeInner(
     invalidateCliStoreCredential(cred.cliIntegration ?? "opencode")
     const fresh = await resolveCred()
     if (fresh && fresh.key !== cred.key) {
-      response = await jevRequest(fresh, questions, state, signal, model)
+      response = await jevRequest(fresh, questions, state, signal, model, longContext)
       text = await response.text()
     }
   }
@@ -747,8 +758,9 @@ async function jevJudge(
   state: unknown,
   signal?: AbortSignal,
   model: string = resolveModel(),
+  longContext = false,
 ): Promise<JevReply> {
-  return jevJudgeInner(resolveKey, questions, state, signal, model)
+  return jevJudgeInner(resolveKey, questions, state, signal, model, longContext)
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,7 +1326,7 @@ function decisionEndpointFor(providerId: string): string | undefined {
 }
 
 async function pingDeploy(cred: Credential | undefined, model: string, signal: AbortSignal): Promise<void> {
-  const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal, model)
+  const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal, model, false)
   const text = await response.text()
   if (!response.ok) {
     // Same legacy-shadow marker as the judged-call path: the ping's
@@ -2083,6 +2095,7 @@ export default Plugin.define({
       state: unknown,
       signal?: AbortSignal,
       sessionID?: string,
+      longContext = false,
     ): Promise<{ reply: JevReply; cached: boolean }> {
       // Deployment gate for the model this call actually uses: a session pin
       // (/jev-models) overrides the chain per the picker contract, and every
@@ -2095,16 +2108,24 @@ export default Plugin.define({
       const verdict = await deployVerdict(model)
       if (!verdict.ok) throw new Error(verdict.fault?.surface ?? "jev: deployment fault")
       const endpoint = resolveEndpoint()
-      if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal, model), cached: false }
+      if (!cacheEnabled) return { reply: await jevJudge(questions, state, signal, model, longContext), cached: false }
       const key = `judgment/${createHash("sha256")
-        .update(JSON.stringify({ endpoint, model, state, questions: toQuestionMap(questions) }))
+        .update(
+          JSON.stringify({
+            endpoint,
+            model,
+            state,
+            questions: toQuestionMap(questions),
+            longContext: longContext || undefined,
+          }),
+        )
         .digest("hex")}`
       const hit = await (ctx as any).storage.get(key)
       if (hit && hit.answers && typeof hit.answers === "object") {
         JUDGMENT_CACHE_STATS.hits += 1
         return { reply: hit as JevReply, cached: true }
       }
-      const reply = await jevJudge(questions, state, signal, model)
+      const reply = await jevJudge(questions, state, signal, model, longContext)
       JUDGMENT_CACHE_STATS.misses += 1
       await (ctx as any).storage.set(key, reply)
       return { reply, cached: false }
@@ -4767,14 +4788,18 @@ export default Plugin.define({
       // it a below-target idle logs nothing, so "never fired" and "fired but
       // skipped" look identical from the outside.
       const compactionDebug = c.debug === true
+      // Long context (262k) is on for compaction by default: the 25k/30k
+      // budgets below are what made large transcripts fail to compact.
+      const longCtx = c.longContext !== false
+      const budgets = longCtx ? LONG_CONTEXT_BUDGETS : COMPACTION_DEFAULTS
       const compactionOptions = {
         keepThreshold: num(c.keepThreshold, COMPACTION_DEFAULTS.keepThreshold),
         preserveRecentMessages: Math.max(
           0,
           Math.floor(num(c.preserveRecentMessages, COMPACTION_DEFAULTS.preserveRecentMessages)),
         ),
-        maxStateTokens: num(c.maxStateTokens, COMPACTION_DEFAULTS.maxStateTokens),
-        maxRequestTokens: num(c.maxRequestTokens, COMPACTION_DEFAULTS.maxRequestTokens),
+        maxStateTokens: num(c.maxStateTokens, budgets.maxStateTokens),
+        maxRequestTokens: num(c.maxRequestTokens, budgets.maxRequestTokens),
         maxBatchCalls: Math.max(
           1,
           Math.floor(num(c.maxBatchCalls, COMPACTION_DEFAULTS.maxBatchCalls)),
@@ -4910,7 +4935,7 @@ export default Plugin.define({
           const plan = await runCompaction(
             event.messages,
             async (questions, state) =>
-              (await cachedJudge(questions as Question[], state, undefined, sid)).reply,
+              (await cachedJudge(questions as Question[], state, undefined, sid, longCtx)).reply,
             SECRET_PATTERNS,
             compactionOptions,
             () => window,

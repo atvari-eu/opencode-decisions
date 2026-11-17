@@ -9,7 +9,7 @@ Opt-in with `"compaction": { "enabled": true }`. Replaces OpenCode's lossy summa
 - In `"mode": "clean"` the decisions are applied to the messages and OpenCode's built-in summarizer then runs over the cleaned history.
 - OpenCode keeps its own recent window (`compaction.keep.tokens`, 15k by default) beside the summary. On OpenCode 2.2.5 the hook is handed the whole transcript before that window is split off, so calls inside it are judged but stay verbatim regardless - those judgments cost tokens without removing context.
 
-Fail-closed: a missing key, a jev failure, a malformed answer, or a history that cannot be fitted leaves compaction entirely to OpenCode's built-in summarizer on the unmodified transcript. Decisions are never half-applied.
+Fail-closed: a missing key, a jev failure, a malformed answer, a history that cannot be fitted, or a judgment request estimated over Jev's limit (about 60k tokens, or 250k with `longContext`) leaves compaction entirely to OpenCode's built-in summarizer on the unmodified transcript. Decisions are never half-applied.
 
 Running `/compact` again within a minute of a jev pass yields to the built-in summarizer (the jev summary ends with a reminder). `/jev-compact` (requires `enabled`) is the explicit jev-only ask: in `replace` mode the pruned summary applies with no summarizer call, in `clean` mode the kept message counts are announced before the summarizer, and "nothing stale", duplicate-pass, and failure cases abort visibly instead of silently rerouting.
 
@@ -24,8 +24,9 @@ Privacy: judging needs to see the conversation, so enabling compaction sends the
 | `summary` | `"report"` | Shape of the hook-supplied summary. `"report"` is a five-line counts-only audit note; `"transcript"` replays the kept user/assistant text verbatim (plus per-call verdicts). |
 | `keepThreshold` | `0.5` | Verdict probability at which a call/result survives. |
 | `preserveRecentMessages` | `6` | Newest messages pinned untouched. |
-| `maxStateTokens` | `25000` | Judgment-state budget before fitting gives up (and compaction falls back). |
-| `maxRequestTokens` | `30000` | Per-request budget (state + questions); splits into batches. |
+| `longContext` | `true` | Sends `TypeSafe-Danger-Zone-Long-Context: true` on compaction judgments only, lifting Jev's limits to 262k tokens per request and per question (slower and less accurate; set `false` to keep the default 64k limits). |
+| `maxStateTokens` | `200000` with `longContext`, else `25000` | Judgment-state budget before fitting gives up (and compaction falls back). |
+| `maxRequestTokens` | `200000` with `longContext`, else `30000` | Per-request budget (state + questions); splits into batches. |
 | `maxBatchCalls` | `32` | Tool calls judged per request (two questions each = 64 - the largest count System One deployments document; lower it for stricter deployments). |
 | `truncateHeadChars` | `300` | Head kept when a result is pruned. |
 | `minReduction` | `0.25` | Required relative shrink before a hook-supplied summary replaces the built-in one. |

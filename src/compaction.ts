@@ -195,6 +195,22 @@ export function estimateTokens(text: string): number {
   return Math.ceil(tokens)
 }
 
+export const LONG_CONTEXT_HEADER = "TypeSafe-Danger-Zone-Long-Context"
+export const JEV_DEFAULT_CONTEXT_LIMIT = 60_000
+export const JEV_LONG_CONTEXT_LIMIT = 250_000
+export const LONG_CONTEXT_BUDGETS = { maxStateTokens: 200_000, maxRequestTokens: 200_000 }
+
+export function longContextHeaders(on: boolean): Record<string, string> {
+  return on ? { [LONG_CONTEXT_HEADER]: "true" } : {}
+}
+
+export function oversizedRequest(payload: string, longContext: boolean): string | undefined {
+  const size = estimateTokens(payload)
+  const limit = longContext ? JEV_LONG_CONTEXT_LIMIT : JEV_DEFAULT_CONTEXT_LIMIT
+  if (size <= limit) return undefined
+  return `jev: request is ~${size} tokens, over the ${longContext ? "long-context" : "default"} limit of ~${limit}`
+}
+
 function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`
 }
