@@ -3676,6 +3676,18 @@ export function parseProviderOption(raw: unknown): ProviderOption | undefined {
   return { kind: "host", id: value }
 }
 
+/** Parses the `poolProvider` plugin option: "opencode" (the pay-as-you-go
+ * Console catalog) or "opencode-go" (the OpenCode Go plan, whose catalog is
+ * the plan's model list) restricts the pool to that provider's entries;
+ * anything else returns undefined - the plugin keeps both Console providers
+ * and logs a hint, never guesses. */
+export function parsePoolProviderOption(raw: unknown): "opencode" | "opencode-go" | undefined {
+  if (typeof raw !== "string") return undefined
+  const value = raw.trim()
+  if (value === "opencode" || value === "opencode-go") return value
+  return undefined
+}
+
 /** System One route of a deployment base: the "/systemone" suffix, appended
  * unless the base already ends in the route segment ("…/v1/systemone" stays
  * as given, so an explicit override wins). */

@@ -34,6 +34,7 @@ import {
   parseTrainingConsent,
   percentileRanks,
   poolCut,
+  parsePoolProviderOption,
   poolRunCost,
   poolShapeText,
   rankDefaultPool,
@@ -956,6 +957,15 @@ describe("pool size and cost helpers", () => {
     expect(parseGoPlanOption("go-plus-2")).toBeUndefined()
     expect(parseGoPlanOption(40)).toBeUndefined()
     expect(parseGoPlanOption(undefined)).toBeUndefined()
+  })
+
+  test("poolProvider parses only the two Console providers", () => {
+    expect(parsePoolProviderOption("opencode-go")).toBe("opencode-go")
+    expect(parsePoolProviderOption(" opencode ")).toBe("opencode")
+    expect(parsePoolProviderOption("go")).toBeUndefined()
+    expect(parsePoolProviderOption("munito")).toBeUndefined()
+    expect(parsePoolProviderOption(40)).toBeUndefined()
+    expect(parsePoolProviderOption(undefined)).toBeUndefined()
   })
 
   test("the plan prices match the docs pricing table", () => {

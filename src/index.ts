@@ -151,6 +151,7 @@ import {
   parseIdleAuto,
   parseDecisionIndex,
   parseProviderOption,
+  parsePoolProviderOption,
   parseRouteSources,
   parseScreenAnnotation,
   parseScreenMode,
@@ -473,6 +474,9 @@ let OPTIONS_PROVIDER: ProviderOption | undefined = undefined
 /** The selected OpenCode Go plan (the `goPlan` plugin option, base plan by
  * default). Decides which plan's monthly allowances are read. */
 let OPTIONS_GO_PLAN: GoPlan = "go"
+/** The `poolProvider` option: restricts the pool to one Console provider's
+ * catalog; undefined keeps both. */
+let OPTIONS_POOL_PROVIDER: "opencode" | "opencode-go" | undefined = undefined
 let RESOLVED_ENDPOINT: string | undefined = CONSOLE_ENDPOINT
 let RESOLVED_CHAIN: CredentialChain = credentialChain(undefined)
 // One-shot guard for post-boot re-resolution of a host id that missed plugin
@@ -1190,10 +1194,15 @@ async function loadConsoleConsent(): Promise<void> {
 // by default; a user without a Console chat provider simply gets no default
 // pool (routing stays off) instead of being routed onto another provider.
 function consoleCatalogModels(models: Iterable<any>): PoolModel[] {
+  // The poolProvider option can tie the pool to one Console plan: an
+  // `opencode-go` value is the OpenCode Go plan, whose catalog is the plan's
+  // model list, so pay-as-you-go-only entries are not available under it.
+  const poolProvider = OPTIONS_POOL_PROVIDER
   const byID = new Map<string, PoolModel>()
   for (const info of models) {
     const providerID = typeof info?.providerID === "string" ? info.providerID : ""
     if (providerID !== "opencode" && providerID !== "opencode-go") continue
+    if (poolProvider && providerID !== poolProvider) continue
     const modelID =
       typeof info?.id === "string" ? info.id : typeof info?.modelID === "string" ? info.modelID : ""
     if (!modelID) continue
@@ -1683,6 +1692,15 @@ export default Plugin.define({
       console.log(
         `[jev] provider: ${providerOptionText(providerOption)} (from plugin options)`,
       )
+    }
+    const poolProviderOption = parsePoolProviderOption(o.poolProvider)
+    if (o.poolProvider !== undefined && !poolProviderOption) {
+      console.log(
+        `[jev] poolProvider: ${JSON.stringify(o.poolProvider)} is not "opencode" or "opencode-go" - keeping both providers`,
+      )
+    } else if (poolProviderOption) {
+      OPTIONS_POOL_PROVIDER = poolProviderOption
+      console.log(`[jev] poolProvider: ${poolProviderOption} (from plugin options)`)
     }
     const goPlanOption = parseGoPlanOption(o.goPlan)
     if (o.goPlan !== undefined && !goPlanOption) {

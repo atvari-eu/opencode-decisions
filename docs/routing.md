@@ -86,7 +86,7 @@ The other named stances are the built-in texts of `plan` and `explore`, so a cus
 Besides the static list, an entry can draw from what the session already knows:
 
 - `"favorites": true` merges the models starred in OpenCode's model picker.
-- `"pool": true` merges the Console pool into the entry's configured candidates. `false` disables the pool for that entry; absent keeps the implicit rule (the pool applies only when the entry has no candidates and no other source); an object (`{ "cheap": 2, "strong": 1 }`) inlines that entry's own cut. The pool itself is Console-only: it ranks `opencode`/`opencode-go` models and never another provider's.
+- `"pool": true` merges the Console pool into the entry's configured candidates. `false` disables the pool for that entry; absent keeps the implicit rule (the pool applies only when the entry has no candidates and no other source); an object (`{ "cheap": 2, "strong": 1 }`) inlines that entry's own cut. The pool itself is Console-only: it ranks `opencode`/`opencode-go` models and never another provider's. The `poolProvider` option can tie it to one plan: `"opencode-go"` (the OpenCode Go plan) keeps only `opencode-go` entries, so the pay-as-you-go catalog's plan-external models stay out.
 
 Sources are off unless enabled, additive to `candidates`, and fail open when the underlying file is unreadable. The leaderboard is fetched once per process and snapshotted. Each entry can enable its own `favorites` and `pool`; the process reads the favorites snapshot once and derives each entry's pool from it. New favorites appear after a restart; per-prompt routing then costs no extra I/O. `/jev-status` shows the resolved pool for every entry.
 
@@ -142,6 +142,7 @@ The window and the picks inside it are built in this order:
 | `effort.mode` | `"pair"` | Effort routing. `"pair"` pairs the model with a level on entry turns and leaves a hand-picked model alone; `"always"` also routes the effort variant of a hand-picked model; `"off"` turns effort routing off everywhere. An unknown value falls back to `"pair"` and logs a warning. |
 | `effort.minConfidence` | `0.45` | Minimum confidence required to switch the reasoning variant. |
 | `goPlan` | `"go"` | Which OpenCode Go plan's monthly allowance prices the pool and the candidate rows: `"go"` ($10/mo), `"go-plus"` ($40/mo), or `"go-teams"` ($20/member/mo). The plan's price over a model's allowance turns its list price into the effective price the cheap axis and the judge see. Allowances ride only `opencode-go` entries, never the pay-as-you-go `opencode` provider; an unknown value keeps the default and logs a warning. |
+| `poolProvider` | both | Restricts the Console pool to one provider's catalog: `"opencode-go"` (the OpenCode Go plan) or `"opencode"` (pay-as-you-go). Unset or any other value keeps both providers and logs a hint. Use `"opencode-go"` when your workspace runs on a Go plan, so the pay-as-you-go catalog's plan-external models stay out of routing and `/jev-status`. |
 
 The routing options live under `routes` because `model` is the judgment-model override (a string); one key must never carry a string and an object meaning.
 
