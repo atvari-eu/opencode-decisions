@@ -182,6 +182,7 @@ import {
   maxPoolTopK,
   poolCut,
   poolShapeText,
+  rankPoolOrders,
   type PoolSplitConfig,
   type RouteEntryKind,
   type ModelFacts,
@@ -2194,6 +2195,9 @@ export default Plugin.define({
     // (no judged calls, no network beyond the one-per-process leaderboard
     // fetch). The pool builder is assigned by the auto block below.
     let poolSnapshot: ((agentFloor?: number) => Promise<JevStatusInfo["pools"]>) | undefined = undefined
+    /** Full pool ranking for the panel's expandable section, assigned by the
+     * auto block below (it owns the catalog). */
+    let poolRanking: (() => JevStatusInfo["ranking"]) | undefined = undefined
 
     const statusFeatures = (doneNudges?: number): JevStatusInfo["features"] => {
       const rows: JevStatusInfo["features"] = []
@@ -2444,6 +2448,7 @@ export default Plugin.define({
                 }),
                 features: statusFeatures(doneNudges),
                 pools,
+                ...(poolRanking ? { ranking: poolRanking() } : {}),
               }
             },
           })
@@ -2796,6 +2801,28 @@ export default Plugin.define({
           })
         }
         return rows
+      }
+
+      // The expandable /jev-status ranking: the pool's usable models
+      // (opencode/opencode-go chat models, one entry per id) ordered by each
+      // pool axis; consent-blocked models ride out separately. The axis
+      // ordering itself lives in `rankPoolOrders` (logic.ts), so the lists
+      // share the cuts' own comparators instead of re-implementing them here.
+      poolRanking = (): JevStatusInfo["ranking"] => {
+        const pool = consolePool()
+        const source = LEADERBOARD_SOURCE ?? "unknown"
+        if (pool.length === 0) {
+          return { source, cheap: [], popular: [], strong: [], strongWindow: 0, consentBlocked: [] }
+        }
+        const orders = rankPoolOrders(pool, LEADERBOARD, { consent: CONSOLE_CONSENT })
+        return {
+          source,
+          cheap: orders.cheap.map(candidateKey),
+          popular: orders.popular.map(candidateKey),
+          strong: orders.strong.map(candidateKey),
+          strongWindow: orders.strongWindow,
+          consentBlocked: orders.consentBlocked.map(candidateKey),
+        }
       }
 
       await (ctx as any).session.hook("prompt", async (event: any) => {

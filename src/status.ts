@@ -2,7 +2,7 @@
 // publishes over the jev-config rpc, plus the pure presentation helpers the
 // panel renders (sections, severity statistics, copy text). No host imports.
 import type { AuditEntry } from "./audit"
-import type { JevStatusInfo, JevStatusPool } from "./rpc"
+import type { JevStatusInfo, JevStatusPool, JevStatusRanking } from "./rpc"
 
 export const STATUS_STORE_KEY = "jev-status"
 
@@ -98,11 +98,61 @@ function poolLines(pool: JevStatusPool): StatusLine[] {
   return lines
 }
 
+/** The expandable pool-ranking section: one summary line while collapsed, or
+ * the pool's usable models ordered by each pool axis (the strong axis leads
+ * with the default cut's window, the rest marked as outside it) plus the
+ * consent-blocked models the ordered lists exclude. Absent when the snapshot
+ * carries no ranking (no Console chat provider). */
+export function rankingSection(
+  ranking: JevStatusRanking | undefined,
+  expanded: boolean,
+): StatusSection | undefined {
+  if (!ranking) return undefined
+  const axes: Array<[string, readonly string[]]> = [
+    ["cheap", ranking.cheap],
+    ["popular", ranking.popular],
+    ["strong", ranking.strong],
+  ]
+  if (!expanded) {
+    const n = ranking.cheap.length
+    const blocked = ranking.consentBlocked.length > 0 ? ` · ${ranking.consentBlocked.length} consent-blocked` : ""
+    return {
+      title: "pool ranking",
+      lines: [
+        {
+          text:
+            n === 0
+              ? `${n} models · leaderboard ${ranking.source}`
+              : `${n} models · cheap / popular / strong${blocked} · press p to expand`,
+          muted: n === 0,
+        },
+      ],
+    }
+  }
+  const lines: StatusLine[] = [{ text: `leaderboard: ${ranking.source}`, muted: true }]
+  for (const [name, ids] of axes) {
+    lines.push({ text: `${name}:` })
+    ids.forEach((id, index) => {
+      // The strong axis is window-first: everything after the window part is
+      // only catalog-wide order, not the strength the picks compare.
+      if (name === "strong" && index === ranking.strongWindow) {
+        lines.push({ text: "outside the default window:", muted: true })
+      }
+      lines.push({ text: `${index + 1}. ${id}`, muted: true })
+    })
+  }
+  if (ranking.consentBlocked.length > 0) {
+    lines.push({ text: `consent-blocked: ${joined(ranking.consentBlocked)}`, muted: true })
+  }
+  return { title: "pool ranking", lines }
+}
+
 /** The whole panel body as sections, in display order. */
 export function statusSections(
   status: JevStatusInfo,
   items: readonly AuditEntry[],
   at = Date.now(),
+  rankingExpanded = false,
 ): StatusSection[] {
   const effective = effectiveModel(status)
   const current: StatusLine[] = [
@@ -199,6 +249,7 @@ export function statusSections(
     events.push({ text: "no error-severity events in the ring", muted: true })
   }
 
+  const ranking = rankingSection(status.ranking, rankingExpanded)
   const sections: StatusSection[] = [
     { title: "decision model", lines: current },
     { title: `available decision models (${status.models.length})`, lines: models },
@@ -209,6 +260,7 @@ export function statusSections(
           ? status.pools.flatMap(poolLines)
           : [{ text: "no routing entries", muted: true }],
     },
+    ...(ranking ? [ranking] : []),
     { title: "health", lines: health },
     {
       title: "features",
@@ -222,9 +274,14 @@ export function statusSections(
 }
 
 /** Plain-text rendering for the panel's copy shortcut. */
-export function statusText(status: JevStatusInfo, items: readonly AuditEntry[], at = Date.now()): string {
+export function statusText(
+  status: JevStatusInfo,
+  items: readonly AuditEntry[],
+  at = Date.now(),
+  rankingExpanded = false,
+): string {
   const lines: string[] = [`jev status - ${effectiveModel(status)} - ${clockOf(at)}`]
-  for (const section of statusSections(status, items, at)) {
+  for (const section of statusSections(status, items, at, rankingExpanded)) {
     lines.push("")
     lines.push(section.title)
     for (const line of section.lines) lines.push(`  ${line.text}`)

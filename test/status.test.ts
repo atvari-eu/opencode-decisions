@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import type { AuditEntry } from "../src/audit"
 import type { JevStatusInfo } from "../src/rpc"
-import { effectiveModel, eventStats, statusSections, statusText } from "../src/status"
+import {
+  effectiveModel,
+  eventStats,
+  rankingSection,
+  statusSections,
+  statusText,
+} from "../src/status"
 
 function audit(partial: Partial<AuditEntry> & { id: string; tone: AuditEntry["tone"] }): AuditEntry {
   return {
@@ -180,5 +186,95 @@ describe("statusSections", () => {
     expect(pool.lines.map((line) => line.text)).toContain(
       "  no usable candidates - routing stays off for this entry",
     )
+  })
+})
+
+describe("rankingSection", () => {
+  const RANKING = {
+    source: "live" as const,
+    cheap: ["opencode/cheap", "opencode/fast", "opencode/strong"],
+    popular: ["opencode/fast", "opencode/strong", "opencode/cheap"],
+    strong: ["opencode/strong", "opencode/fast", "opencode/cheap"],
+    strongWindow: 2,
+    consentBlocked: [] as string[],
+  }
+
+  test("absent without a ranking", () => {
+    expect(rankingSection(undefined, true)).toBeUndefined()
+  })
+
+  test("collapsed is a one-line summary with counts", () => {
+    const section = rankingSection(RANKING, false)!
+    expect(section.title).toBe("pool ranking")
+    expect(section.lines).toHaveLength(1)
+    expect(section.lines[0]!.text).toBe("3 models · cheap / popular / strong · press p to expand")
+  })
+
+  test("collapsed counts consent-blocked models", () => {
+    const section = rankingSection({ ...RANKING, consentBlocked: ["opencode/promo"] }, false)!
+    expect(section.lines[0]!.text).toBe(
+      "3 models · cheap / popular / strong · 1 consent-blocked · press p to expand",
+    )
+  })
+
+  test("expanded lists every model per axis, in order", () => {
+    const section = rankingSection(RANKING, true)!
+    const text = section.lines.map((line) => line.text)
+    expect(text).toEqual([
+      "leaderboard: live",
+      "cheap:",
+      "1. opencode/cheap",
+      "2. opencode/fast",
+      "3. opencode/strong",
+      "popular:",
+      "1. opencode/fast",
+      "2. opencode/strong",
+      "3. opencode/cheap",
+      "strong:",
+      "1. opencode/strong",
+      "2. opencode/fast",
+      "outside the default window:",
+      "3. opencode/cheap",
+    ])
+  })
+
+  test("expanded marks consent-blocked models the lists exclude", () => {
+    const section = rankingSection({ ...RANKING, consentBlocked: ["opencode/promo", "opencode/free"] }, true)!
+    const text = section.lines.map((line) => line.text)
+    expect(text[text.length - 1]!).toBe("consent-blocked: opencode/promo, opencode/free")
+  })
+
+  test("no divider when every strong entry is inside the window", () => {
+    const section = rankingSection({ ...RANKING, strongWindow: 3 }, true)!
+    const text = section.lines.map((line) => line.text)
+    expect(text).not.toContain("outside the default window:")
+  })
+
+  test("an empty ranking states the leaderboard state", () => {
+    const section = rankingSection(
+      { source: "none", cheap: [], popular: [], strong: [], strongWindow: 0, consentBlocked: [] },
+      false,
+    )!
+    expect(section.lines[0]!.text).toBe("0 models · leaderboard none")
+  })
+
+  test("sits between the pools and health sections, hidden when absent", () => {
+    const withRanking = statusSections({ ...STATUS, ranking: RANKING }, []).map((s) => s.title)
+    expect(withRanking).toEqual([
+      "decision model",
+      "available decision models (3)",
+      "model pools",
+      "pool ranking",
+      "health",
+      "features",
+      "recent events",
+    ])
+    expect(statusSections(STATUS, []).map((s) => s.title)).not.toContain("pool ranking")
+  })
+
+  test("copy text carries the expanded ranking", () => {
+    const text = statusText({ ...STATUS, ranking: RANKING }, [], Date.now(), true)
+    expect(text).toContain("pool ranking")
+    expect(text).toContain("outside the default window:")
   })
 })

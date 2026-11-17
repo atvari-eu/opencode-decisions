@@ -13,6 +13,14 @@ import {
   type StatusStore,
 } from "./status"
 
+/** The panel-local expandable-toggle store: the ranking section stays a
+ * one-line summary until this flips (tui.ts does not own this state). */
+export interface RankStore {
+  rankingExpanded: boolean
+}
+
+export const RANK_STORE_KEY = "jev-status-rank"
+
 interface PanelInput {
   readonly name: string
   readonly sessionID: string
@@ -47,11 +55,13 @@ function clockOf(at: number): string {
 function Panel(props: {
   store: readonly [StatusStore, unknown]
   audit: readonly [AuditItems, unknown]
+  rank: readonly [RankStore, unknown]
   context: any
   panel: PanelInput
 }): JSX.Element {
   const state = (): StatusStore => props.store?.[0] ?? { status: null, at: 0 }
   const items = (): AuditEntry[] => props.audit?.[0]?.items ?? []
+  const rank = (): RankStore => props.rank?.[0] ?? { rankingExpanded: false }
   const muted = () => props.context?.theme?.text?.muted
 
   const copy = (text: string): void => {
@@ -78,8 +88,9 @@ function Panel(props: {
   }
   const navigationHints = (): string => {
     const refresh = `${key("jev.status.refresh", "r")} refresh`
-    if ((props.panel.width ?? 0) < 88) return `${refresh} · ${key("jev.status.copy", "c")} copy · esc/q close`
-    return `${refresh} · ${key("jev.status.copy", "c")} copy · ${key("jev.status.fullscreen", "f")} fullscreen · esc/q close`
+    const ranking = `${key("jev.status.ranking", "p")} ${rank().rankingExpanded ? "collapse ranking" : "expand ranking"}`
+    if ((props.panel.width ?? 0) < 88) return `${refresh} · ${ranking} · ${key("jev.status.copy", "c")} copy · esc/q close`
+    return `${refresh} · ${ranking} · ${key("jev.status.copy", "c")} copy · ${key("jev.status.fullscreen", "f")} fullscreen · esc/q close`
   }
 
   props.context.keymap.layer(() => ({
@@ -110,13 +121,25 @@ function Panel(props: {
         run: () => statusRefresh.current?.(),
       },
       {
+        id: "jev.status.ranking",
+        title: "Toggle the pool ranking",
+        bind: "p",
+        run: () => {
+          const update = props.rank?.[1]
+          if (typeof update !== "function") return
+          update((draft: RankStore) => {
+            draft.rankingExpanded = !draft.rankingExpanded
+          })
+        },
+      },
+      {
         id: "jev.status.copy",
         title: "Copy jev status",
         bind: "c",
         run: () => {
           const snapshot = state()
           if (!snapshot.status) return
-          copy(statusText(snapshot.status, items(), snapshot.at || Date.now()))
+          copy(statusText(snapshot.status, items(), snapshot.at || Date.now(), rank().rankingExpanded))
         },
       },
     ],
@@ -146,7 +169,7 @@ function Panel(props: {
             )
             return nodes
           }
-          const sections = statusSections(snapshot.status, items(), snapshot.at || Date.now())
+          const sections = statusSections(snapshot.status, items(), snapshot.at || Date.now(), rank().rankingExpanded)
           for (const section of sections) {
             nodes.push(
               <text selectable={false} fg={muted()} marginTop={1}>
@@ -209,11 +232,14 @@ export default {
       initial: { items: [] },
       key: "id",
     })
+    const rank = context.storage.store<RankStore>(RANK_STORE_KEY, {
+      initial: { rankingExpanded: false },
+    })
     const unslot = context.ui.slot?.({
       append: "session.panel",
       render: (input: PanelInput) =>
         input?.name === "jev-status" ? (
-          <Panel store={store} audit={audit} context={context} panel={input} />
+          <Panel store={store} audit={audit} rank={rank} context={context} panel={input} />
         ) : null,
     })
     return async () => {

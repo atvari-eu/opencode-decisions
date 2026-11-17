@@ -78,6 +78,25 @@ export interface JevStatusAuth {
   endpointOverride: boolean
 }
 
+/** Every Console pool model ranked by each source axis, for the status
+ * panel's expandable ranking. Each list is the pool's usable
+ * opencode/opencode-go catalog (one entry per id, consent-blocked models
+ * excluded) ordered by one axis: `cheap` by ascending real cost, `popular` by
+ * public leaderboard position, `strong` window-first (the default cut's
+ * window by its own strength scores, then the rest by catalog-wide scores).
+ * `consentBlocked` lists the models the ordered lists exclude because the
+ * Console would refuse them under the workspace's training switches. */
+export interface JevStatusRanking {
+  /** The leaderboard fetch state behind the popular axis. */
+  source: "live" | "snapshot" | "none" | "unknown"
+  cheap: string[]
+  popular: string[]
+  strong: string[]
+  /** Length of the leading window-relative part of `strong`. */
+  strongWindow: number
+  consentBlocked: string[]
+}
+
 /** One read-only snapshot for the /jev-status panel. */
 export interface JevStatusInfo {
   /** Selected deployment (provider option text). */
@@ -107,6 +126,9 @@ export interface JevStatusInfo {
   models: Array<{ id: string; fault?: string }>
   features: Array<{ name: string; state: string }>
   pools: JevStatusPool[]
+  /** Full ranking by each pool axis; absent when the session lists no
+   * Console chat provider. */
+  ranking?: JevStatusRanking
 }
 
 /** One screening verdict, sent server -> TUI over the `screen` event. This is
@@ -279,6 +301,19 @@ const methods = {
             required: ["id", "review", "enabled", "explicit", "sourced", "excluded", "usable"],
             additionalProperties: false,
           },
+        },
+        ranking: {
+          type: "object",
+          properties: {
+            source: { type: "string", enum: ["live", "snapshot", "none", "unknown"] },
+            cheap: { type: "array", items: STRING },
+            popular: { type: "array", items: STRING },
+            strong: { type: "array", items: STRING },
+            strongWindow: { type: "number" },
+            consentBlocked: { type: "array", items: STRING },
+          },
+          required: ["source", "cheap", "popular", "strong", "strongWindow", "consentBlocked"],
+          additionalProperties: false,
         },
       },
       required: ["provider", "endpoint", "model", "catalog", "health", "models", "features", "pools"],

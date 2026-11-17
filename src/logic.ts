@@ -1854,6 +1854,76 @@ export function poolCut(
   return poolSlots(window, cfg, strengthScores(window))
 }
 
+/** One full-pool ranking per source axis, for `/jev-status`'s expandable
+ * pool-ranking section. The comparators are the cuts' own (`cheapestModels`,
+ * `strongestModels`, leaderboard order), so every list agrees with the picks
+ * on ties:
+ *
+ * - `cheap` is the whole usable pool by ascending real cost (`poolRunCost`,
+ *   the cheap axis the cuts use), unknown costs last, ties by model id.
+ * - `popular` is public leaderboard position, matched through every alias
+ *   (`poolAliases`), so a model the window counts under its canonical id
+ *   ranks where the community puts it; unranked models last, ties by id.
+ * - `strong` is window-first: the default kind's window (the same consent-
+ *   and context-filtered, review-pick-subtracted universe the default cut
+ *   scores strength over) ranked by those window-relative scores, then the
+ *   rest of the pool by catalog-wide scores. Outside-window entries sort
+ *   last on the strong axis even when a catalog-wide score would place them
+ *   higher - strength is only comparable inside the window the cut scores.
+ *
+ * Consent-blocked models are ranked by nothing: they can never be picked, so
+ * they ride out in `consentBlocked` for the panel to list. */
+export interface PoolRankOrders {
+  cheap: PoolModel[]
+  popular: PoolModel[]
+  strong: PoolModel[]
+  /** Length of the leading window-relative part of `strong`. */
+  strongWindow: number
+  consentBlocked: PoolModel[]
+}
+
+export function rankPoolOrders(
+  models: readonly PoolModel[],
+  leaderboard: readonly string[],
+  options: {
+    /** Cut for the default-kind window; defaults to the built-in shape. */
+    default?: PoolSplitConfig
+    /** Cut for the review-kind subtraction; defaults to the built-in shape. */
+    review?: PoolSplitConfig
+    consent?: TrainingConsent
+  } = {},
+): PoolRankOrders {
+  const usable = models.filter((model) => !needsTrainingOptIn(model, options.consent))
+  const blocked = models.filter((model) => needsTrainingOptIn(model, options.consent))
+  const cheap = cheapestModels(usable, usable.length, poolRunCost)
+  const ranks = usageRanks(leaderboard)
+  const positionOf = (model: PoolModel): number => {
+    let best = Number.POSITIVE_INFINITY
+    for (const alias of poolAliases(model)) {
+      const rank = ranks.get(alias)
+      if (rank !== undefined && rank < best) best = rank
+    }
+    return best
+  }
+  const popular = [...usable].sort((a, b) => {
+    const pa = positionOf(a)
+    const pb = positionOf(b)
+    return pa !== pb ? pa - pb : compareModelIDs(a, b)
+  })
+  const defaultCfg = options.default ?? DEFAULT_POOL_SPLITS.default
+  const reviewCfg = options.review ?? DEFAULT_POOL_SPLITS.review
+  const { defaultWindow } = poolWindows(models, leaderboard, defaultCfg, reviewCfg, options.consent)
+  const windowKeys = new Set(defaultWindow.map(candidateKey))
+  const rest = usable.filter((model) => !windowKeys.has(candidateKey(model)))
+  const windowStrength = strengthScores(defaultWindow)
+  const catalogStrength = strengthScores(usable)
+  const strong = [
+    ...strongestModels(defaultWindow, defaultWindow.length, (model) => windowStrength.get(candidateKey(model))),
+    ...strongestModels(rest, rest.length, (model) => catalogStrength.get(candidateKey(model))),
+  ]
+  return { cheap, popular, strong, strongWindow: defaultWindow.length, consentBlocked: blocked }
+}
+
 // Catalog entries can exist and still be unusable in the current session:
 // explicitly disabled, deprecated/retired, or (defensively) newer host
 // versions may annotate other end-of-life states. Only known-bad markers are
