@@ -1093,3 +1093,46 @@ That surfaced row then moved to the `screen` RPC event (see "Context
 hygiene"): the diagnostic toasts in the TUI without a transcript row, and
 only hosts without an event surface still write the row.
 
+## Judgment model fallbacks: same deployment, retryable failures only
+
+The single-model configuration made a transient 429 or a removed model
+take every judged feature down until the plugin restarted. The optional
+`fallbacks` list adds an ordered chain behind the effective primary
+(session pin, then `model` / `JEV_MODEL` / default) without weakening the
+fail-closed stance:
+
+- Every member comes from the same `provider` resolution, endpoint, and
+  credential chain. A 401/403 cannot be fixed by another model, so it
+  surfaces immediately; so does a model-relative 400 and a caller abort.
+  There is still no fallback between deployments.
+- Only retryable failures advance: 402 (a free fallback may still answer),
+  408/425/429, 5xx/outage, and network or timeout errors. The classification
+  is `judgeFailureRetryable` over the same `classifyJevFailure` vocabulary
+  the init check and error rows use; a status-less transport failure
+  (Node's "fetch failed", Bun's "Unable to connect...", the fetch cause
+  code) classifies as outage and carries a `transport` marker.
+- The whole chain is ping-verified at startup, except when the primary's
+  fault is deployment-wide (credential, gate, no endpoint, or a
+  transport-level outage: an endpoint that fails fast - refused connections,
+  DNS - answers for no model, so pinging the rest cannot help; a blackholed
+  network times out per member and still walks the chain) or the endpoint
+  resolves after the init check, which pings the primary alone. A 5xx
+  outage or a slow-model timeout stays per-model so a healthy fallback can
+  still be found. A member that does not answer
+  is cached as faulted and skipped; the init config fault fires only when no
+  member answers, and it keeps the primary's wording.
+- A judged call that fails retryably demotes that model for
+  `fallbackCooldownMs` (default 1 h; 0 disables), so a rate-limited primary is
+  not re-hit on every turn. The last member is always attempted - something has
+  to run.
+- The first retryable failure advances and emits one warning per
+  session and model pair, naming both models; `fallbackNotify: false`
+  suppresses it (the warning rides the `jev-config` event surface, and
+  `/jev-status` names the serving model as the remaining signal). If the
+  chain is exhausted, the primary's diagnostic
+  is thrown, so single-model callers see exactly the failure they saw before;
+  when the cooldown filter demoted the primary before the call, its own
+  failure from the demotion is thrown (kept across fallback-served calls,
+  cleared when the primary serves again, and passed only while it is
+  actually filtered, so a fresh failure always wins over a stale one).
+

@@ -115,6 +115,11 @@ export interface JevStatusInfo {
   auth?: JevStatusAuth
   health: {
     ok: boolean
+    /** The chain member serving judgments; absent when none answers. */
+    serving?: string
+    /** Whether the primary itself has a ping verdict ("unchecked" vs "faulted"). */
+    primaryChecked?: boolean
+    /** The primary's fault; rides a faulted chain only. */
     fault?: string
     /** The jev-config event surface is available. */
     events: boolean

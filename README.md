@@ -21,10 +21,10 @@ Clean verdicts cost nothing: a passing screen, a delegated approval, or a likely
 ## Requirements
 
 - [OpenCode 2](https://opencode.ai/v2/docs)
-- Access to a decision-model deployment; the plugin speaks the System One interface. With the default Console endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`, then your `opencode auth login` session, then the legacy auth store. Other deployments resolve from your provider config at startup. Paid models bill the responsible deployment's account (402 on empty funds, never retried elsewhere).
+- Access to a decision-model deployment; the plugin speaks the System One interface. With the default Console endpoint, credentials resolve per call: `TYPESAFE_API_KEY` / `OPENCODE_API_KEY`, then your `opencode auth login` session, then the legacy auth store. Other deployments resolve from your provider config at startup. Paid models bill the responsible deployment's account (402 on empty funds; a configured fallback model on the same deployment may still be tried).
 - No specific model provider is required; the plugin only adds tools and guards around your existing setup.
 
-The deployment is ping-verified at plugin start, and faults fail every judged feature closed. Details: [Provider & credentials](docs/provider.md).
+The deployment is ping-verified at plugin start, and a fault that leaves no usable judgment model (chain primary and fallbacks alike) fails every judged feature closed. Details: [Provider & credentials](docs/provider.md).
 
 ## Install
 
@@ -90,6 +90,9 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
       "package": "github:atvari-eu/opencode-decisions",
       "options": {
         "model": "jev-1.13",           // judgment model (default: jev-1.13-free, or JEV_MODEL)
+        "fallbacks": ["jev-1.13-free"], // optional retry chain on the same deployment
+        "fallbackCooldownMs": 3600000, // 1 h; 0 retries the failed model on the next call
+        "fallbackNotify": true,        // false silences the "using fallback" warning
         "routes": {                    // routing meta models (default + review are built in)
           "default": {
             "candidates": ["openrouter/anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4"],
@@ -123,6 +126,9 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 | `commands` | on | [Tools & commands](docs/tools.md) |
 | `cache` | on | [Tools & commands](docs/tools.md) |
 | `model` | `JEV_MODEL` env / `jev-1.13-free` | [Provider](docs/provider.md) |
+| `fallbacks` | none | [Provider](docs/provider.md#judgment-model-fallbacks) |
+| `fallbackCooldownMs` | `3600000` (1 h) | [Provider](docs/provider.md#judgment-model-fallbacks) |
+| `fallbackNotify` | `true` | [Provider](docs/provider.md#judgment-model-fallbacks) |
 | `provider` | `"opencode"` (Console) | [Provider](docs/provider.md) |
 | `routes` | `{ "default": {}, "review": {} }`; extra keys become picker entries; each entry's Console cut inlines under `pool` | [Model routing](docs/routing.md) |
 | `agents` | `{ "build": {}, "plan": {}, "explore": {} }`; extra keys become agent profiles | [Model routing](docs/routing.md#agent-profiles) |
@@ -136,7 +142,7 @@ Screening, scrubbing, the judgment tools (including `jev_find`), and the command
 
 ## Guarantees
 
-- **Fail-closed**: a missing credential, judge failure, timeout, or malformed answer never produces a "successful" judgment. Faults surface as toasts, never as a silently guessed endpoint or a fallback between deployments.
+- **Fail-closed**: a missing credential, judge failure, timeout, or malformed answer never produces a "successful" judgment. Faults surface as toasts, never as a silently guessed endpoint or a fallback between deployments. The optional model `fallbacks` chain stays on one deployment and only advances on retryable failures (rate limits, funds, outages); credential, gate, and unknown-model faults surface immediately.
 - Secret scrubbing is deterministic regex, applied to screening, tool inputs, prompts, and compaction state alike.
 - The cache stores answers and usage only - never the judged content.
 - User prompt text is never edited for instructions (scrub aside); guidance lives in the tool descriptions.
