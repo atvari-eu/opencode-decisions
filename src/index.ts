@@ -129,6 +129,8 @@ import {
   effectiveJevModel,
   emergencyRealModel,
   effortRoutingEnabled,
+  anyProfileEffortAlways,
+  effectiveEffortMode,
   type EffortMode,
   type GoPlan,
   idleSessionID,
@@ -1820,6 +1822,9 @@ export default Plugin.define({
     const parsedAgents = parseAgentProfiles((o as any).agents)
     for (const warning of parsedAgents.warnings) console.log(`[jev] agents: ${warning}`)
     const agentProfiles = new Map(parsedAgents.profiles.map((profile) => [profile.id, profile]))
+    // A per-agent `effort.mode: "always"` engages routing on its agent even
+    // when the global mode never does, so the hook setup below must run.
+    const agentEffortAlways = anyProfileEffortAlways(agentProfiles.values())
     const allRouteEntries = parsedRoutes.entries
     const routeEntries = allRouteEntries.filter((entry) => entry.enable)
     // Usable pool keys per auto entry, recorded by the prompt hook. The
@@ -2411,11 +2416,12 @@ export default Plugin.define({
                     )?.trim()
                     const profile = agentID ? agentProfiles.get(agentID) : undefined
                     if (profile?.minContext) agentFloor = profile.minContext
+                    const resolvedMode = effectiveEffortMode(effortMode, profile ?? null)
                     const routing = entry
-                      ? effortRoutingEnabled(effortMode, true)
+                      ? effortRoutingEnabled(resolvedMode, true)
                         ? "model + effort"
                         : "model"
-                      : effortAlways
+                      : resolvedMode === "always"
                         ? "effort only"
                         : "off"
                     session = {
@@ -2574,9 +2580,9 @@ export default Plugin.define({
     // one of those entries; on any real model the plugin leaves the turn
     // untouched unless `effort.mode: "always"`. Entry turns pair the model
     // with an effort level by default; `effort.mode: "off"` keeps them
-    // model-only.
+    // model-only. A per-agent `always` override also engages the setup.
 
-    if (effortAlways || routeEntries.length > 0) {
+    if (effortAlways || agentEffortAlways || routeEntries.length > 0) {
       // Register the pseudo-model entries so they appear in the TUI picker.
       // They list no variants, their base URL points at a closed port so a
       // direct invocation fails fast (fail-visible: the plugin routes away
@@ -2926,11 +2932,12 @@ export default Plugin.define({
           // manual pick IS the stand-down, no pin bookkeeping needed.
           const entry = pseudoEntryFor(routeEntries, model)
           const atAutoEntry = !!entry
-          if (!atAutoEntry && !effortAlways) return
+          const resolvedEffortMode = effectiveEffortMode(effortMode, agentProfile)
+          if (!atAutoEntry && resolvedEffortMode !== "always") return
           // Entries pair model and effort by default; `"always"` also routes
           // a hand-picked model's effort, and `"off"` keeps entries
-          // model-only.
-          const effortEnabled = effortRoutingEnabled(effortMode, atAutoEntry)
+          // model-only. An agent profile can override the global mode.
+          const effortEnabled = effortRoutingEnabled(resolvedEffortMode, atAutoEntry)
 
           const currentRef = {
             providerID: model.providerID,
@@ -4596,7 +4603,7 @@ export default Plugin.define({
     // touched: a manual pick sleeps through resets until the user returns to
     // their resting point. Best effort: without a usable idle subscription
     // the session stays on the last pick until the next prompt re-routes it.
-    if (routeEntries.length > 0 || effortAlways) {
+    if (routeEntries.length > 0 || effortAlways || agentEffortAlways) {
       const restingInflight = new Set<string>()
       const resetResting = async (sessionID: string): Promise<void> => {
         if (restingInflight.has(sessionID)) return
