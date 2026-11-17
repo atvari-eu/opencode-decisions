@@ -1879,6 +1879,9 @@ export interface PoolRankOrders {
   strong: PoolModel[]
   /** Length of the leading window-relative part of `strong`. */
   strongWindow: number
+  /** The default window itself, in leaderboard order: the models the routing
+   * cut can actually pick. The panel marks these in every axis list. */
+  window: PoolModel[]
   consentBlocked: PoolModel[]
 }
 
@@ -1921,7 +1924,7 @@ export function rankPoolOrders(
     ...strongestModels(defaultWindow, defaultWindow.length, (model) => windowStrength.get(candidateKey(model))),
     ...strongestModels(rest, rest.length, (model) => catalogStrength.get(candidateKey(model))),
   ]
-  return { cheap, popular, strong, strongWindow: defaultWindow.length, consentBlocked: blocked }
+  return { cheap, popular, strong, strongWindow: defaultWindow.length, window: defaultWindow, consentBlocked: blocked }
 }
 
 // Catalog entries can exist and still be unusable in the current session:

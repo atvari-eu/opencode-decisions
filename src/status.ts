@@ -116,6 +116,7 @@ export function rankingSection(
   if (!expanded) {
     const n = ranking.cheap.length
     const blocked = ranking.consentBlocked.length > 0 ? ` · ${ranking.consentBlocked.length} consent-blocked` : ""
+    const inWindow = ranking.window.length > 0 ? ` · ${ranking.window.length} in window` : ""
     return {
       title: "pool ranking",
       lines: [
@@ -123,13 +124,21 @@ export function rankingSection(
           text:
             n === 0
               ? `${n} models · leaderboard ${ranking.source}`
-              : `${n} models · cheap / popular / strong${blocked} · press p to expand`,
+              : `${n} models${inWindow} · cheap / popular / strong${blocked} · press p to expand`,
           muted: n === 0,
         },
       ],
     }
   }
-  const lines: StatusLine[] = [{ text: `leaderboard: ${ranking.source}`, muted: true }]
+  const inWindow = new Set(ranking.window)
+  const mark = (id: string): string => (inWindow.has(id) ? `${id} *` : id)
+  const lines: StatusLine[] = [
+    { text: `leaderboard: ${ranking.source}`, muted: true },
+    {
+      text: `* = inside the routing window (${ranking.window.length}); those are the picks the cuts draw from`,
+      muted: true,
+    },
+  ]
   for (const [name, ids] of axes) {
     lines.push({ text: `${name}:` })
     ids.forEach((id, index) => {
@@ -138,7 +147,7 @@ export function rankingSection(
       if (name === "strong" && index === ranking.strongWindow) {
         lines.push({ text: "outside the default window:", muted: true })
       }
-      lines.push({ text: `${index + 1}. ${id}`, muted: true })
+      lines.push({ text: `${index + 1}. ${mark(id)}`, muted: true })
     })
   }
   if (ranking.consentBlocked.length > 0) {

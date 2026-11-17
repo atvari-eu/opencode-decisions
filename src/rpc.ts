@@ -94,6 +94,9 @@ export interface JevStatusRanking {
   strong: string[]
   /** Length of the leading window-relative part of `strong`. */
   strongWindow: number
+  /** The routing window itself (the default cut's universe), so the panel
+   * can mark which entries the cut can actually pick. */
+  window: string[]
   consentBlocked: string[]
 }
 
@@ -310,9 +313,10 @@ const methods = {
             popular: { type: "array", items: STRING },
             strong: { type: "array", items: STRING },
             strongWindow: { type: "number" },
+            window: { type: "array", items: STRING },
             consentBlocked: { type: "array", items: STRING },
           },
-          required: ["source", "cheap", "popular", "strong", "strongWindow", "consentBlocked"],
+          required: ["source", "cheap", "popular", "strong", "strongWindow", "window", "consentBlocked"],
           additionalProperties: false,
         },
       },

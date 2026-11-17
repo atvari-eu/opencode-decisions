@@ -40,6 +40,7 @@ describe("rankPoolOrders", () => {
     // though its catalog-wide benchmark score is the pool's highest.
     expect(orders.strongWindow).toBe(3)
     expect(orders.strong.map((m) => m.modelID)).toEqual(["q", "p", "r", "t"])
+    expect(orders.window.map((m) => m.modelID)).toEqual(["p", "q", "r"])
   })
 
   test("the first strong entry equals poolCut's pick over the same window", () => {
@@ -101,6 +102,7 @@ describe("rankPoolOrders", () => {
     expect(orders.popular.map((m) => m.modelID)).toEqual(["p"])
     expect(orders.strong.map((m) => m.modelID)).toEqual(["p"])
     expect(orders.strongWindow).toBe(1)
+    expect(orders.window.map((m) => m.modelID)).toEqual(["p"])
     expect(orders.consentBlocked.map((m) => m.modelID)).toEqual(["p-free"])
   })
 

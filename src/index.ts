@@ -2833,7 +2833,15 @@ export default Plugin.define({
         const pool = consolePool()
         const source = LEADERBOARD_SOURCE ?? "unknown"
         if (pool.length === 0) {
-          return { source, cheap: [], popular: [], strong: [], strongWindow: 0, consentBlocked: [] }
+          return {
+            source,
+            cheap: [],
+            popular: [],
+            strong: [],
+            strongWindow: 0,
+            window: [],
+            consentBlocked: [],
+          }
         }
         const orders = rankPoolOrders(pool, LEADERBOARD, { consent: CONSOLE_CONSENT })
         return {
@@ -2842,6 +2850,7 @@ export default Plugin.define({
           popular: orders.popular.map(candidateKey),
           strong: orders.strong.map(candidateKey),
           strongWindow: orders.strongWindow,
+          window: orders.window.map(candidateKey),
           consentBlocked: orders.consentBlocked.map(candidateKey),
         }
       }
