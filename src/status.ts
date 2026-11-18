@@ -131,11 +131,11 @@ export function rankingSection(
   const lines: StatusLine[] = [{ text: `leaderboard: ${ranking.source}`, muted: true }]
   // Which routing entry's pool took each ranked model, for the mark.
   const marks = new Map<string, string[]>()
-  let reviewPicks = false
-  for (const pick of ranking.picks) {
-    if (pick.review) reviewPicks = true
-    const label = pick.review ? `${pick.entry}*` : pick.entry
-    for (const id of pick.models) {
+  let reviewMarks = false
+  for (const route of ranking.routes) {
+    if (route.review) reviewMarks = true
+    const label = route.review ? `${route.route}*` : route.route
+    for (const id of route.models) {
       const labels = marks.get(id) ?? []
       if (!labels.includes(label)) labels.push(label)
       marks.set(id, labels)
@@ -146,10 +146,10 @@ export function rankingSection(
     return labels ? `${id} (${labels.join(", ")})` : id
   }
   if (marks.size > 0) {
-    lines.push({ text: "(entry) = that routing entry's pool pick", muted: true })
+    lines.push({ text: "(route) = a route whose pool can route to this model", muted: true })
   }
-  if (reviewPicks) {
-    lines.push({ text: "entry* = its picks are excluded from the default cut", muted: true })
+  if (reviewMarks) {
+    lines.push({ text: "route* = review-kind route: its models are excluded from the default cut", muted: true })
   }
   for (const [name, ids] of axes) {
     lines.push({ text: `${name}:` })

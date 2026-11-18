@@ -30,8 +30,8 @@ describe("makeJevRpc", () => {
     const rankingSchema = definition.methods.status.output.properties.ranking
     // Optional: the server omits it entirely when no Console pool exists.
     expect(definition.methods.status.output.required).not.toContain("ranking")
-    expect(rankingSchema.required).toEqual(["source", "cheap", "popular", "strong", "picks", "consentBlocked"])
-    expect(rankingSchema.properties.picks.items.required).toEqual(["entry", "review", "models"])
+    expect(rankingSchema.required).toEqual(["source", "cheap", "popular", "strong", "routes", "consentBlocked"])
+    expect(rankingSchema.properties.routes.items.required).toEqual(["route", "review", "models"])
     expect(rankingSchema.properties.source.enum).toEqual(["live", "snapshot", "none", "unknown"])
     expect(definition.methods.status.output.properties.health.required).toEqual(["ok", "events"])
     expect(definition.methods.status.output.properties.health.properties.checkedAt).toBeDefined()

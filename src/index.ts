@@ -2367,9 +2367,10 @@ export default Plugin.define({
     // (no judged calls, no network beyond the one-per-process leaderboard
     // fetch). The pool builder is assigned by the auto block below.
     let poolSnapshot: ((agentFloor?: number) => Promise<JevStatusInfo["pools"]>) | undefined = undefined
-    /** Full pool ranking for the panel's expandable section, assigned by the
-     * auto block below (it owns the catalog). */
-    let poolRanking: (() => JevStatusInfo["ranking"]) | undefined = undefined
+    /** Full pool ranking for the panel's expandable section; takes the pool
+     * snapshot's resolved rows so the route marks match the pools section.
+     * Assigned by the auto block below (it owns the catalog). */
+    let poolRanking: ((rows: JevStatusInfo["pools"]) => JevStatusInfo["ranking"]) | undefined = undefined
 
     const statusFeatures = (doneNudges?: number): JevStatusInfo["features"] => {
       const rows: JevStatusInfo["features"] = []
@@ -2633,7 +2634,7 @@ export default Plugin.define({
                 }),
                 features: statusFeatures(doneNudges),
                 pools,
-                ...(poolRanking ? { ranking: poolRanking() } : {}),
+                ...(poolRanking ? { ranking: poolRanking(computed) } : {}),
               }
             },
           })
@@ -2993,29 +2994,26 @@ export default Plugin.define({
       // pool axis; consent-blocked models ride out separately. The axis
       // ordering itself lives in `rankPoolOrders` (logic.ts), so the lists
       // share the cuts' own comparators instead of re-implementing them here.
-      poolRanking = (): JevStatusInfo["ranking"] => {
+      // The route marks reuse the pool snapshot's resolved usable sets, so
+      // they show the same routes the pools section does.
+      poolRanking = (rows: JevStatusInfo["pools"]): JevStatusInfo["ranking"] => {
         const pool = consolePool()
         const source = LEADERBOARD_SOURCE ?? "unknown"
         if (pool.length === 0) {
-          return { source, cheap: [], popular: [], strong: [], picks: [], consentBlocked: [] }
+          return { source, cheap: [], popular: [], strong: [], routes: [], consentBlocked: [] }
         }
         const orders = rankPoolOrders(pool, LEADERBOARD, { consent: CONSOLE_CONSENT })
-        // Every other entry's pool picks, so the panel can mark which ranked
-        // models another routing entry's cut also took. The default entry's
-        // own picks are the lists themselves (cheap/popular/strong slots).
-        const picks = routeEntries
-          .filter((entry) => entry.usePool && entry !== defaultRouteEntry)
-          .map((entry) => ({
-            entry: entry.modelID,
-            review: entry.review,
-            models: defaultCandidates(entry).map(candidateKey),
-          }))
+        // Every enabled routing entry's usable candidates, so the panel can
+        // mark which routes can actually route to a ranked model.
+        const routes = rows
+          .filter((row) => row.enabled && row.usable.length > 0)
+          .map((row) => ({ route: row.name ?? row.id, review: row.review, models: row.usable }))
         return {
           source,
           cheap: orders.cheap.map(candidateKey),
           popular: orders.popular.map(candidateKey),
           strong: orders.strong.map(candidateKey),
-          picks,
+          routes,
           consentBlocked: orders.consentBlocked.map(candidateKey),
         }
       }

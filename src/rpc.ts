@@ -85,13 +85,13 @@ export interface JevStatusAuth {
  * cost, `popular` by public leaderboard position, `strong` by the same
  * window-relative benchmark scores the default cut compares.
  * `consentBlocked` lists the models the window excludes because the Console
- * would refuse them under the workspace's training switches. `picks` lists,
- * per routing entry other than the ranked default, the models that entry's
- * pool took from the window, for the panel's mark. */
-export interface JevStatusPoolPicks {
-  /** Picker id of the routing entry whose cut produced these. */
-  entry: string
-  /** Review-kind entry: its picks are excluded from the default cut. */
+ * would refuse them under the workspace's training switches. `routes` lists,
+ * per routing entry, the models that entry can route to, for the panel's
+ * mark. */
+export interface JevStatusRouteMark {
+  /** Display title of the routing entry ("Auto", "Auto Review", …). */
+  route: string
+  /** Review-kind entry: its models are excluded from the default cut. */
   review: boolean
   models: string[]
 }
@@ -102,7 +102,7 @@ export interface JevStatusRanking {
   cheap: string[]
   popular: string[]
   strong: string[]
-  picks: JevStatusPoolPicks[]
+  routes: JevStatusRouteMark[]
   consentBlocked: string[]
 }
 
@@ -323,18 +323,18 @@ const methods = {
             cheap: { type: "array", items: STRING },
             popular: { type: "array", items: STRING },
             strong: { type: "array", items: STRING },
-            picks: {
+            routes: {
               type: "array",
               items: {
                 type: "object",
-                properties: { entry: STRING, review: { type: "boolean" }, models: { type: "array", items: STRING } },
-                required: ["entry", "review", "models"],
+                properties: { route: STRING, review: { type: "boolean" }, models: { type: "array", items: STRING } },
+                required: ["route", "review", "models"],
                 additionalProperties: false,
               },
             },
             consentBlocked: { type: "array", items: STRING },
           },
-          required: ["source", "cheap", "popular", "strong", "picks", "consentBlocked"],
+          required: ["source", "cheap", "popular", "strong", "routes", "consentBlocked"],
           additionalProperties: false,
         },
       },

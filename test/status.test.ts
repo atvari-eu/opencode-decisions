@@ -195,7 +195,10 @@ describe("rankingSection", () => {
     cheap: ["opencode/cheap", "opencode/fast", "opencode/strong"],
     popular: ["opencode/fast", "opencode/strong", "opencode/cheap"],
     strong: ["opencode/strong", "opencode/fast", "opencode/cheap"],
-    picks: [{ entry: "auto-review", review: true, models: ["opencode/strong", "opencode/fast"] }],
+    routes: [
+      { route: "Auto", review: false, models: ["opencode/cheap"] },
+      { route: "Auto Review", review: true, models: ["opencode/strong", "opencode/fast"] },
+    ],
     consentBlocked: [] as string[],
   }
 
@@ -222,40 +225,40 @@ describe("rankingSection", () => {
     const text = section.lines.map((line) => line.text)
     expect(text).toEqual([
       "leaderboard: live",
-      "(entry) = that routing entry's pool pick",
-      "entry* = its picks are excluded from the default cut",
+      "(route) = a route whose pool can route to this model",
+      "route* = review-kind route: its models are excluded from the default cut",
       "cheap:",
-      "1. opencode/cheap",
-      "2. opencode/fast (auto-review*)",
-      "3. opencode/strong (auto-review*)",
+      "1. opencode/cheap (Auto)",
+      "2. opencode/fast (Auto Review*)",
+      "3. opencode/strong (Auto Review*)",
       "popular:",
-      "1. opencode/fast (auto-review*)",
-      "2. opencode/strong (auto-review*)",
-      "3. opencode/cheap",
+      "1. opencode/fast (Auto Review*)",
+      "2. opencode/strong (Auto Review*)",
+      "3. opencode/cheap (Auto)",
       "strong:",
-      "1. opencode/strong (auto-review*)",
-      "2. opencode/fast (auto-review*)",
-      "3. opencode/cheap",
+      "1. opencode/strong (Auto Review*)",
+      "2. opencode/fast (Auto Review*)",
+      "3. opencode/cheap (Auto)",
     ])
   })
 
-  test("a model two pools picked shows both labels", () => {
+  test("a model two routes can use shows both labels", () => {
     const section = rankingSection(
       {
         ...RANKING,
-        picks: [
-          { entry: "auto-review", review: true, models: ["opencode/fast"] },
-          { entry: "code", review: false, models: ["opencode/fast"] },
+        routes: [
+          { route: "Auto Review", review: true, models: ["opencode/fast"] },
+          { route: "Code", review: false, models: ["opencode/fast"] },
         ],
       },
       true,
     )!
     const text = section.lines.map((line) => line.text)
-    expect(text).toContain("2. opencode/fast (auto-review*, code)")
+    expect(text).toContain("2. opencode/fast (Auto Review*, Code)")
   })
 
-  test("no legend without picks", () => {
-    const section = rankingSection({ ...RANKING, picks: [] }, true)!
+  test("no legend without route marks", () => {
+    const section = rankingSection({ ...RANKING, routes: [] }, true)!
     const text = section.lines.map((line) => line.text)
     expect(text[1]!).toBe("cheap:")
   })
@@ -268,7 +271,7 @@ describe("rankingSection", () => {
 
   test("an empty ranking states the leaderboard state", () => {
     const section = rankingSection(
-      { source: "none", cheap: [], popular: [], strong: [], picks: [], consentBlocked: [] },
+      { source: "none", cheap: [], popular: [], strong: [], routes: [], consentBlocked: [] },
       false,
     )!
     expect(section.lines[0]!.text).toBe("0 models · leaderboard none")
