@@ -48,9 +48,10 @@ describe("rankPoolOrders", () => {
     expect(cut.map(candidateKey)).toEqual([candidateKey(orders.strong[0]!)])
   })
 
-  test("review picks are subtracted from the window like the default cut does", () => {
+  test("ranks the full window: other cuts' picks stay visible", () => {
     // Six equal-cost models; the built-in review cut (1 popular + 2 strong)
-    // takes a, d and e, so the window the ranking shows is b, c and f.
+    // takes a, d and e, but the ranking is over the whole window, so the
+    // review picks keep their strength positions.
     const mk = (modelID: string, g: number) => ({
       providerID: "opencode",
       modelID,
@@ -65,13 +66,13 @@ describe("rankPoolOrders", () => {
     const board = ["a", "b", "c", "d", "e", "f"]
     const orders = rankPoolOrders(pool, board)
     const split = defaultPoolSplit(pool, board)
-    expect(orders.cheap.map((m) => m.modelID)).toEqual(["b", "c", "f"])
-    expect(orders.popular.map((m) => m.modelID)).toEqual(["b", "c", "f"])
-    expect(orders.strong.map((m) => m.modelID)).toEqual(["b", "c", "f"])
-    // The default cut's strong pick is the strongest of its window's
-    // remainder, so it sits at its window-relative strength position.
+    expect(orders.cheap.map((m) => m.modelID)).toEqual(["a", "b", "c", "d", "e", "f"])
+    expect(orders.popular.map((m) => m.modelID)).toEqual(["a", "b", "c", "d", "e", "f"])
+    expect(orders.strong.map((m) => m.modelID)).toEqual(["d", "e", "a", "b", "c", "f"])
+    // The default cut still subtracts the review picks from its own window,
+    // so its strong pick stays the strongest of the remainder.
     expect(split.default.filter((m) => m.poolSlot === "strong").map((m) => m.modelID)).toEqual(["f"])
-    expect(orders.strong[2]!.modelID).toBe("f")
+    expect(orders.strong[5]!.modelID).toBe("f")
   })
 
   test("cheap ties by model id and orders unknown costs last", () => {

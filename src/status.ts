@@ -129,9 +129,31 @@ export function rankingSection(
     }
   }
   const lines: StatusLine[] = [{ text: `leaderboard: ${ranking.source}`, muted: true }]
+  // Which routing entry's pool took each ranked model, for the mark.
+  const marks = new Map<string, string[]>()
+  let reviewPicks = false
+  for (const pick of ranking.picks) {
+    if (pick.review) reviewPicks = true
+    const label = pick.review ? `${pick.entry}*` : pick.entry
+    for (const id of pick.models) {
+      const labels = marks.get(id) ?? []
+      if (!labels.includes(label)) labels.push(label)
+      marks.set(id, labels)
+    }
+  }
+  const render = (id: string): string => {
+    const labels = marks.get(id)
+    return labels ? `${id} (${labels.join(", ")})` : id
+  }
+  if (marks.size > 0) {
+    lines.push({ text: "(entry) = that routing entry's pool pick", muted: true })
+  }
+  if (reviewPicks) {
+    lines.push({ text: "entry* = its picks are excluded from the default cut", muted: true })
+  }
   for (const [name, ids] of axes) {
     lines.push({ text: `${name}:` })
-    ids.forEach((id, index) => lines.push({ text: `${index + 1}. ${id}`, muted: true }))
+    ids.forEach((id, index) => lines.push({ text: `${index + 1}. ${render(id)}`, muted: true }))
   }
   if (ranking.consentBlocked.length > 0) {
     lines.push({ text: `consent-blocked: ${joined(ranking.consentBlocked)}`, muted: true })

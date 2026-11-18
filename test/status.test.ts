@@ -195,6 +195,7 @@ describe("rankingSection", () => {
     cheap: ["opencode/cheap", "opencode/fast", "opencode/strong"],
     popular: ["opencode/fast", "opencode/strong", "opencode/cheap"],
     strong: ["opencode/strong", "opencode/fast", "opencode/cheap"],
+    picks: [{ entry: "auto-review", review: true, models: ["opencode/strong", "opencode/fast"] }],
     consentBlocked: [] as string[],
   }
 
@@ -216,24 +217,47 @@ describe("rankingSection", () => {
     )
   })
 
-  test("expanded lists every window model per axis, in order", () => {
+  test("expanded marks the entries other pools picked", () => {
     const section = rankingSection(RANKING, true)!
     const text = section.lines.map((line) => line.text)
     expect(text).toEqual([
       "leaderboard: live",
+      "(entry) = that routing entry's pool pick",
+      "entry* = its picks are excluded from the default cut",
       "cheap:",
       "1. opencode/cheap",
-      "2. opencode/fast",
-      "3. opencode/strong",
+      "2. opencode/fast (auto-review*)",
+      "3. opencode/strong (auto-review*)",
       "popular:",
-      "1. opencode/fast",
-      "2. opencode/strong",
+      "1. opencode/fast (auto-review*)",
+      "2. opencode/strong (auto-review*)",
       "3. opencode/cheap",
       "strong:",
-      "1. opencode/strong",
-      "2. opencode/fast",
+      "1. opencode/strong (auto-review*)",
+      "2. opencode/fast (auto-review*)",
       "3. opencode/cheap",
     ])
+  })
+
+  test("a model two pools picked shows both labels", () => {
+    const section = rankingSection(
+      {
+        ...RANKING,
+        picks: [
+          { entry: "auto-review", review: true, models: ["opencode/fast"] },
+          { entry: "code", review: false, models: ["opencode/fast"] },
+        ],
+      },
+      true,
+    )!
+    const text = section.lines.map((line) => line.text)
+    expect(text).toContain("2. opencode/fast (auto-review*, code)")
+  })
+
+  test("no legend without picks", () => {
+    const section = rankingSection({ ...RANKING, picks: [] }, true)!
+    const text = section.lines.map((line) => line.text)
+    expect(text[1]!).toBe("cheap:")
   })
 
   test("expanded marks consent-blocked models the lists exclude", () => {
@@ -244,7 +268,7 @@ describe("rankingSection", () => {
 
   test("an empty ranking states the leaderboard state", () => {
     const section = rankingSection(
-      { source: "none", cheap: [], popular: [], strong: [], consentBlocked: [] },
+      { source: "none", cheap: [], popular: [], strong: [], picks: [], consentBlocked: [] },
       false,
     )!
     expect(section.lines[0]!.text).toBe("0 models · leaderboard none")

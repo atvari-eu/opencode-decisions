@@ -2997,14 +2997,25 @@ export default Plugin.define({
         const pool = consolePool()
         const source = LEADERBOARD_SOURCE ?? "unknown"
         if (pool.length === 0) {
-          return { source, cheap: [], popular: [], strong: [], consentBlocked: [] }
+          return { source, cheap: [], popular: [], strong: [], picks: [], consentBlocked: [] }
         }
         const orders = rankPoolOrders(pool, LEADERBOARD, { consent: CONSOLE_CONSENT })
+        // Every other entry's pool picks, so the panel can mark which ranked
+        // models another routing entry's cut also took. The default entry's
+        // own picks are the lists themselves (cheap/popular/strong slots).
+        const picks = routeEntries
+          .filter((entry) => entry.usePool && entry !== defaultRouteEntry)
+          .map((entry) => ({
+            entry: entry.modelID,
+            review: entry.review,
+            models: defaultCandidates(entry).map(candidateKey),
+          }))
         return {
           source,
           cheap: orders.cheap.map(candidateKey),
           popular: orders.popular.map(candidateKey),
           strong: orders.strong.map(candidateKey),
+          picks,
           consentBlocked: orders.consentBlocked.map(candidateKey),
         }
       }

@@ -1875,29 +1875,28 @@ export function defaultPoolSplit(
 ): PoolSplit {
   const defaultCfg = options.default ?? DEFAULT_POOL_SPLITS.default
   const reviewCfg = options.review ?? DEFAULT_POOL_SPLITS.review
-  const { defaultWindow, review } = poolWindows(models, leaderboard, defaultCfg, reviewCfg, options.consent)
+  const { window, review } = poolWindows(models, leaderboard, defaultCfg, reviewCfg, options.consent)
+  const reviewKeys = new Set(review.map(candidateKey))
+  const defaultWindow = window.filter((model) => !reviewKeys.has(candidateKey(model)))
   return { default: poolSlots(defaultWindow, defaultCfg, strengthScores(defaultWindow)), review }
 }
 
-/** The two windows the built-in pair draws from: review's window with its own
- * slots filled first, then the default window with the review picks removed.
- * Shared by `defaultPoolSplit` and `rankPoolOrders`, so the ranking's strong
- * axis is scored over exactly the universe the default cut scores. */
+/** The two windows the built-in pair draws from: the full default-kind window
+ * (before the review picks are subtracted) and the review cut's picks. Shared
+ * by `defaultPoolSplit`, which subtracts the review picks itself, and
+ * `rankPoolOrders`, which ranks the full window and marks the review picks. */
 function poolWindows(
   models: readonly PoolModel[],
   leaderboard: readonly string[],
   defaultCfg: PoolSplitConfig,
   reviewCfg: PoolSplitConfig,
   consent?: TrainingConsent,
-): { defaultWindow: PoolModel[]; review: PoolModel[] } {
+): { window: PoolModel[]; review: PoolModel[] } {
   const usable = models.filter((model) => !needsTrainingOptIn(model, consent))
   const reviewWindow = poolWindow(usable, leaderboard, reviewCfg)
   const review = poolSlots(reviewWindow, reviewCfg, strengthScores(reviewWindow))
-  const reviewKeys = new Set(review.map(candidateKey))
-  const defaultWindow = poolWindow(usable, leaderboard, defaultCfg).filter(
-    (model) => !reviewKeys.has(candidateKey(model)),
-  )
-  return { defaultWindow, review }
+  const window = poolWindow(usable, leaderboard, defaultCfg)
+  return { window, review }
 }
 
 /** One independent cut over the ranked Console window: what an entry's inlined
@@ -1919,15 +1918,15 @@ export function poolCut(
  * (`cheapestModels`, `strongestModels`, leaderboard order), so every list
  * agrees with the picks on ties:
  *
- * The lists cover the default cut's window only - the catalog matched to the
- * leaderboard, truncated to `topK`, context-floored, and minus the models the
- * review cut took first (those ride in the review pool). Within it, `cheap`
- * is ascending real cost (`poolRunCost`, the cheap axis the cuts use,
- * unknown costs last, ties by model id), `popular` is leaderboard order, and
- * `strong` is benchmark strength by the same window-relative scores the
- * default cut compares. With no usable leaderboard the window fails open to
- * the whole pool ranked by blended price, so a degraded ranking still shows
- * candidates.
+ * The lists cover the default cut's window - the catalog matched to the
+ * leaderboard, truncated to `topK`, context-floored - without subtracting
+ * other cuts' picks, so those stay visible; the caller marks them from each
+ * routing entry's own pool. `cheap` is ascending real cost (`poolRunCost`,
+ * the cheap axis the cuts use, unknown costs last, ties by model id),
+ * `popular` is leaderboard order, and `strong` is benchmark strength by the
+ * same window-relative scores the cuts compare. With no usable leaderboard
+ * the window fails open to the whole pool ranked by blended price, so a
+ * degraded ranking still shows candidates.
  *
  * Consent-blocked models are ranked by nothing: they can never be picked, so
  * they ride out in `consentBlocked` for the panel to list. */
@@ -1944,7 +1943,7 @@ export function rankPoolOrders(
   options: {
     /** Cut for the default-kind window; defaults to the built-in shape. */
     default?: PoolSplitConfig
-    /** Cut for the review-kind subtraction; defaults to the built-in shape. */
+    /** Cut for the review-kind picks; defaults to the built-in shape. */
     review?: PoolSplitConfig
     consent?: TrainingConsent
   } = {},
@@ -1952,7 +1951,7 @@ export function rankPoolOrders(
   const blocked = models.filter((model) => needsTrainingOptIn(model, options.consent))
   const defaultCfg = options.default ?? DEFAULT_POOL_SPLITS.default
   const reviewCfg = options.review ?? DEFAULT_POOL_SPLITS.review
-  const { defaultWindow: window } = poolWindows(models, leaderboard, defaultCfg, reviewCfg, options.consent)
+  const { window } = poolWindows(models, leaderboard, defaultCfg, reviewCfg, options.consent)
   const strength = strengthScores(window)
   const cheap = cheapestModels(window, window.length, poolRunCost)
   const strong = strongestModels(window, window.length, (model) => strength.get(candidateKey(model)))

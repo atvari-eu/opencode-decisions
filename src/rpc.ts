@@ -85,13 +85,24 @@ export interface JevStatusAuth {
  * cost, `popular` by public leaderboard position, `strong` by the same
  * window-relative benchmark scores the default cut compares.
  * `consentBlocked` lists the models the window excludes because the Console
- * would refuse them under the workspace's training switches. */
+ * would refuse them under the workspace's training switches. `picks` lists,
+ * per routing entry other than the ranked default, the models that entry's
+ * pool took from the window, for the panel's mark. */
+export interface JevStatusPoolPicks {
+  /** Picker id of the routing entry whose cut produced these. */
+  entry: string
+  /** Review-kind entry: its picks are excluded from the default cut. */
+  review: boolean
+  models: string[]
+}
+
 export interface JevStatusRanking {
   /** The leaderboard fetch state behind the window. */
   source: "live" | "snapshot" | "none" | "unknown"
   cheap: string[]
   popular: string[]
   strong: string[]
+  picks: JevStatusPoolPicks[]
   consentBlocked: string[]
 }
 
@@ -312,9 +323,18 @@ const methods = {
             cheap: { type: "array", items: STRING },
             popular: { type: "array", items: STRING },
             strong: { type: "array", items: STRING },
+            picks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { entry: STRING, review: { type: "boolean" }, models: { type: "array", items: STRING } },
+                required: ["entry", "review", "models"],
+                additionalProperties: false,
+              },
+            },
             consentBlocked: { type: "array", items: STRING },
           },
-          required: ["source", "cheap", "popular", "strong", "consentBlocked"],
+          required: ["source", "cheap", "popular", "strong", "picks", "consentBlocked"],
           additionalProperties: false,
         },
       },
