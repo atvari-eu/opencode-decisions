@@ -170,3 +170,17 @@ Architecture and decision history for contributors live in [DESIGN.md](DESIGN.md
 ## License
 
 [MIT](LICENSE) © [atvari GmbH](https://atvari.eu)
+
+---
+
+<a href="https://atvari.eu/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://atvari.eu/images/logo-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://atvari.eu/images/logo.svg">
+    <img src="https://atvari.eu/images/logo.svg" alt="atvari" width="180">
+  </picture>
+</a>
+
+**Need help with Rust, Nix, or Cloud?**
+[atvari](https://atvari.eu/) offers consulting and contracting for
+Rust, Nix/NixOS, and cloud engineering. [Get in touch.](https://atvari.eu/contact/)
