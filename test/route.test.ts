@@ -18,11 +18,14 @@ import {
   parseEffortMode,
   resolveEffortMode,
   emergencyRealModel,
+  entryExitPin,
   isAvailableModel,
   MAX_OPTIONS,
   parseCandidates,
   parseRouteSources,
   pinMatches,
+  pinOwnPick,
+  pinVariantDrift,
   pseudoEntryFor,
   refKey,
   resolveRouteAnswer,
@@ -119,6 +122,57 @@ describe("manual-pick lattice", () => {
     expect(routeDecision({ to, from }, pin, "acme/base") === "go").toBe(true)
     const userAtBase = { to: { providerID: "acme", id: "base", variant: "medium" }, from }
     expect(routeDecision(userAtBase, undefined, "acme/base")).toBe("rearm")
+  })
+})
+
+describe("idle resting reset provenance", () => {
+  const entry = { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL }
+  const pin = { to: { providerID: "acme", id: "fast", variant: "high" }, from: { providerID: AUTO_PROVIDER, id: AUTO_MODEL } }
+
+  test("every switch that leaves an entry records its own pin", () => {
+    const exit = entryExitPin(entry, { providerID: "acme", modelID: "fast", variant: "high" })
+    expect(exit).toEqual({
+      to: { providerID: "acme", id: "fast", variant: "high" },
+      from: { providerID: AUTO_PROVIDER, id: AUTO_MODEL },
+      entry: { providerID: AUTO_PROVIDER, modelID: AUTO_MODEL },
+    })
+    // The switch row it produces matches the pin it just wrote - the shape the
+    // prompt-time manual-pick lattice reads (the reset itself needs only the
+    // pin's target, proven against the live selection).
+    expect(pinMatches({ to: exit.to, from: exit.from }, exit)).toBe(true)
+    expect(entryExitPin(entry, { providerID: "acme", modelID: "fast", variant: "default" }).to).toEqual({
+      providerID: "acme",
+      id: "fast",
+    })
+  })
+
+  test("the pin's target matches the live selection in either ref spelling", () => {
+    expect(pinOwnPick({ providerID: "acme", modelID: "fast", variant: "HIGH" }, pin)).toBe(true)
+    expect(pinOwnPick({ providerID: "acme", id: "fast", variant: "high" }, pin)).toBe(true)
+    expect(pinOwnPick({ providerID: "acme", modelID: "fast" }, { ...pin, to: { providerID: "acme", id: "fast" } })).toBe(
+      true,
+    )
+  })
+
+  test("a manual pick, a variant change or a missing pin is not the plugin's pick", () => {
+    expect(pinOwnPick({ providerID: "zeta", modelID: "flagship" }, pin)).toBe(false)
+    expect(pinOwnPick({ providerID: "acme", modelID: "fast", variant: "low" }, pin)).toBe(false)
+    expect(pinOwnPick({ providerID: "acme", modelID: "fast" }, undefined)).toBe(false)
+    expect(pinOwnPick(undefined, pin)).toBe(false)
+  })
+
+  test("only a same-model variant mismatch is flagged as drift", () => {
+    // Same model, variant dropped or changed: logged so a host that forgot
+    // the variant a pin recorded cannot strand a session silently.
+    expect(pinVariantDrift({ providerID: "acme", modelID: "fast", variant: "low" }, pin)).toBe(true)
+    expect(
+      pinVariantDrift({ providerID: "acme", id: "fast" }, { ...pin, to: { providerID: "acme", id: "fast", variant: "high" } }),
+    ).toBe(true)
+    // A manual model pick stays silent: the reset must not log those.
+    expect(pinVariantDrift({ providerID: "zeta", modelID: "flagship" }, pin)).toBe(false)
+    // The pin's own pick, in either ref spelling, is no drift at all.
+    expect(pinVariantDrift({ providerID: "acme", modelID: "fast", variant: "high" }, pin)).toBe(false)
+    expect(pinVariantDrift(undefined, pin)).toBe(false)
   })
 })
 

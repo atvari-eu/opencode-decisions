@@ -136,6 +136,9 @@ import {
   selectRunnableChain,
   shouldNotifyFallback,
   emergencyRealModel,
+  entryExitPin,
+  pinOwnPick,
+  pinVariantDrift,
   effortRoutingEnabled,
   anyProfileEffortAlways,
   effectiveEffortMode,
@@ -168,7 +171,6 @@ import {
   parseScreenMode,
   parseScreenTools,
   parseTrainingConsent,
-  pinMatches,
   pseudoEntryFor,
   pseudoEntryOfRef,
   resolveEffortMode,
@@ -2709,6 +2711,21 @@ export default Plugin.define({
       })
     }
 
+    // Resting-reset skips are worth a line only when a pin exists: a routed
+    // session that did not pull back to its entry is the "stuck on the last
+    // pick" state (routing disengaged, picker showing the real model), while
+    // untouched sessions have no pin and stay silent. Rate-limited per session
+    // so one stuck session cannot flood the log, and shared by the idle reset
+    // and the prompt-time stranded check below.
+    const restSkipAt = new Map<string, number>()
+    const noteRestSkip = (sessionID: string, reason: string): void => {
+      const now = Date.now()
+      const at = restSkipAt.get(sessionID) ?? 0
+      if (now - at < 60_000) return
+      restSkipAt.set(sessionID, now)
+      console.log(`[jev] rest: ${sessionID} did not reset (${reason})`)
+    }
+
     // -- auto: the opencode-decisions/auto entries + per-turn routing --
     //
     // The built-in `default` and `review` entries are on by default, registering
@@ -3077,6 +3094,31 @@ export default Plugin.define({
           // manual pick IS the stand-down, no pin bookkeeping needed.
           const entry = pseudoEntryFor(routeEntries, model)
           const atAutoEntry = !!entry
+          // Stranded-loop check (log-only): a routed session admitted while it
+          // sits on its own pinned pick means the idle resting reset never ran
+          // (dead event stream, failed switch) - until the session is back on
+          // its entry, routing stays disengaged. The end of this turn re-parks
+          // it once the reset runs again. A mid-turn admission (a queued
+          // prompt) is expected to sit on the pick, so busy sessions stay
+          // quiet. `time.busy` is a timestamp while an execution runs (some
+          // hosts carry a boolean), so any truthy value means mid-turn.
+          if (!atAutoEntry && routeEntries.length > 0 && !session?.time?.busy) {
+            try {
+              const pin = await (ctx as any).storage.get(`route-pin/${String(event.sessionID)}`)
+              if (
+                pinOwnPick(
+                  {
+                    providerID: model.providerID,
+                    modelID: model.id,
+                    variant: typeof model.variant === "string" ? model.variant : undefined,
+                  },
+                  pin,
+                )
+              ) {
+                noteRestSkip(String(event.sessionID), "idle reset never ran - still on the pinned pick")
+              }
+            } catch {}
+          }
           const resolvedEffortMode = effectiveEffortMode(effortMode, agentProfile)
           if (!atAutoEntry && resolvedEffortMode !== "always") return
           // Entries pair model and effort by default; `"always"` also routes
@@ -3213,12 +3255,9 @@ export default Plugin.define({
           }
 
           // Manual picks of a real model never reach this handler (the gate
-          // above returns first), so no pin stand-down is needed here - the
-          // pin record only marks the plugin's own picks for the idle
-          // resting reset.
-          // Manual picks of a real model never reach this handler, so the
-          // pin read only feeds routeTurn's bookkeeping (it records whose
-          // switch it was for the idle resting reset).
+          // above returns first), so no pin stand-down is needed here: the pin
+          // read only feeds routeTurn's bookkeeping - it records whose switch
+          // it was for the idle resting reset.
           const rows: any[] = contextRows(
             await (ctx as any).session.context({ sessionID: event.sessionID }).catch(() => []),
           )
@@ -3264,11 +3303,10 @@ export default Plugin.define({
                 currentRef.modelID = emergency.modelID
                 currentRef.variant = emergency.variant ?? "default"
                 try {
-                  await (ctx as any).storage.set(`route-pin/${String(event.sessionID)}`, {
-                    to: toRef(currentRef),
-                    from: { providerID: entry.providerID, id: entry.modelID },
-                    entry: { providerID: entry.providerID, modelID: entry.modelID },
-                  })
+                  await (ctx as any).storage.set(
+                    `route-pin/${String(event.sessionID)}`,
+                    entryExitPin(entry, currentRef),
+                  )
                 } catch {}
               } catch {}
             }
@@ -4632,8 +4670,9 @@ export default Plugin.define({
     // which feature wants it, so one helper (idleSessionID in logic.ts) serves
     // the resting reset below, done-check and idle-compaction alike.
     // Newest model-switched message in the transcript ({ model, previous }),
-    // or undefined - declared at setup scope because the idle resting reset
-    // needs it even when the auto entry itself is off (plain auto effort).
+    // or undefined - the route turn's manual-pick lattice reads the newest
+    // switch at prompt time (the resting reset below reads the live session
+    // selection instead, so it cannot be stranded by a missing row).
     // idleDisposers: every subscription these features open registers its stop
     // flag, so the cleanup function setup returns (plugin reload/unload) can
     // tear them down instead of leaving stacked probes behind.
@@ -4651,36 +4690,82 @@ export default Plugin.define({
         console.log(`[jev] ${tag}: event subscription unavailable on this OpenCode version - skipped`)
         return false
       }
-      try {
-        const stream: any = await events.subscribe()
-        if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
-          let stopped = false
-          idleDisposers.push(() => {
-            stopped = true
-          })
-          ;(async () => {
-            try {
-              for await (const e of stream as any) {
-                if (stopped) break
-                const sessionID = idleSessionID(e)
-                if (sessionID) await handler(sessionID)
-              }
-            } catch (err: any) {
-              console.error(`[jev] ${tag}: subscription ended (${String(err?.message ?? err)})`)
-            }
-          })()
-          return true
+      let stopped = false
+      idleDisposers.push(() => {
+        stopped = true
+      })
+      const consume = async (stream: any): Promise<number> => {
+        let seen = 0
+        for await (const e of stream) {
+          if (stopped) return seen
+          seen += 1
+          const sessionID = idleSessionID(e)
+          if (sessionID) await handler(sessionID)
         }
-        if (typeof stream === "function") {
-          // Effect-style registration: subscribe(name, handler).
+        return seen
+      }
+      let stream: any
+      try {
+        stream = await events.subscribe()
+      } catch (err: any) {
+        console.error(`[jev] ${tag}: subscription failed (${String(err?.message ?? err)})`)
+      }
+      if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
+        // One consumer per feature, re-attached with backoff. A stream that
+        // ends (server restart, transient error) used to kill every idle
+        // feature for the rest of the process lifetime - the resting reset
+        // then never ran again, so sessions stayed on their last pick with
+        // routing disengaged.
+        void (async () => {
+          let delay = 5_000
+          let empty = 0
+          while (!stopped) {
+            let seen = 0
+            if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
+              try {
+                seen = await consume(stream)
+                if (stopped) return
+                console.error(`[jev] ${tag}: event stream ended - reattaching`)
+              } catch (err: any) {
+                if (stopped) return
+                console.error(`[jev] ${tag}: subscription ended (${String(err?.message ?? err)}) - reattaching`)
+              }
+            }
+            // A stream that carried events starts the backoff over. One that
+            // ends immediately (a host that cannot hold the connection) climbs
+            // 5 s -> 60 s, so a broken stream warns once a minute instead of
+            // spinning a retry-and-warn cycle every few seconds.
+            if (seen > 0) {
+              delay = 5_000
+              empty = 0
+            } else {
+              delay = Math.min(5_000 * 2 ** empty, 60_000)
+              empty += 1
+            }
+            await new Promise((resolve) => setTimeout(resolve, delay))
+            if (stopped) return
+            try {
+              stream = await events.subscribe()
+            } catch (err: any) {
+              console.error(`[jev] ${tag}: reattach failed (${String(err?.message ?? err)})`)
+            }
+          }
+        })()
+        return true
+      }
+      if (typeof stream === "function") {
+        // Effect-style registration: subscribe(name, handler). A rejection
+        // must not escape: it would reject plugin.setup and take every later
+        // registration (and the cleanup) down with this one idle feature.
+        try {
           await stream("session.idle", (e: any) => {
             const sessionID = idleSessionID(e)
             if (sessionID) void handler(sessionID)
           })
           return true
+        } catch (err: any) {
+          console.error(`[jev] ${tag}: subscription failed (${String(err?.message ?? err)})`)
         }
-      } catch (err: any) {
-        console.error(`[jev] ${tag}: subscription failed (${String(err?.message ?? err)})`)
       }
       console.log(`[jev] ${tag}: unusable event subscription - skipped`)
       return false
@@ -4728,6 +4813,13 @@ export default Plugin.define({
             ...(emergency.variant ? { variant: emergency.variant } : {}),
           },
         })
+        // Record the exit exactly like every other plugin switch: without a
+        // pin whose `to` is this placement, the resting reset at the end of
+        // the wake turn mismatches and the session stays off its entry -
+        // routing disengaged and the picker showing the real model.
+        try {
+          await (ctx as any).storage.set(`route-pin/${String(sessionID)}`, entryExitPin(entry, emergency))
+        } catch {}
         console.log(
           `[jev] wake: ${sessionID} left the ${entry.modelID} entry (${emergency.providerID}/${emergency.modelID}) before a posted turn`,
         )
@@ -4747,18 +4839,19 @@ export default Plugin.define({
     // shows the base the user actually chose. Only plugin-made switches are
     // touched: a manual pick sleeps through resets until the user returns to
     // their resting point. Best effort: without a usable idle subscription
-    // the session stays on the last pick until the next prompt re-routes it.
+    // the session stays on its last pick, and the next prompt does not
+    // re-route it either (routing only engages from an entry) - the
+    // prompt-time stranded check is what makes that state visible.
     if (routeEntries.length > 0 || effortAlways || agentEffortAlways) {
       const restingInflight = new Set<string>()
       const resetResting = async (sessionID: string): Promise<void> => {
         if (restingInflight.has(sessionID)) return
         restingInflight.add(sessionID)
         try {
-          // Only plugin-touched sessions reset: a stored pin must exist and
-          // match the newest switch in the transcript. The pin's KEY is the
-          // provenance: route-pin = a session of a routing loop (rest back at
-          // the entry named by the pin's parked-from ref), effort-pin = a
-          // plain effort session (rest at the default variant).
+          // Only plugin-touched sessions reset: a stored pin must exist. The
+          // pin's KEY is the provenance: route-pin = a session of a routing
+          // loop (rest back at the entry the pin names), effort-pin = a plain
+          // effort session (rest at the default variant).
           let pin: any
           let pinIsRoute = false
           try {
@@ -4769,31 +4862,39 @@ export default Plugin.define({
               pin = await (ctx as any).storage.get(`effort-pin/${sessionID}`)
             }
           } catch {}
-          if (!pin) return
-          const rows: any[] = contextRows(
-            await (ctx as any).session.context({ sessionID }).catch(() => []),
-          )
-          const last = latestSwitch(rows)
-          if (!last || !pinMatches(last, pin)) return
+          if (!pin) return // never routed here: untouched, silent
 
           const session: any = unwrapEnvelope(await (ctx as any).session.get({ sessionID }))
           const model = session?.model
-          if (!model?.providerID || !model?.id) return
+          if (!model?.providerID || !model?.id) return noteRestSkip(sessionID, "session model unreadable")
           const currentRef = {
             providerID: model.providerID,
             modelID: model.id,
             variant: typeof model.variant === "string" && model.variant.trim() !== "" ? model.variant.trim() : "default",
           }
-          // Resting point: the entry the route-pin was parked from, else the
-          // default variant of the model the last judged turn landed on. The
-          // pin names the exact entry, so auto and auto-review never restore
-          // into each other.
           if (pseudoEntryFor(routeEntries, model)) return // already resting on an entry
+          // The session must sit on the pick this pin records. Proven by the
+          // live selection rather than the transcript's newest switch row: a
+          // row's `from` drifts on legitimate plugin switches, an unreadable
+          // context yields no row at all, and either must not strand a routed
+          // session off its entry (routing disengaged until the user re-parks
+          // it by hand). A manual model pick differs in `to` and still stands
+          // down - that skip is intended and stays silent. A same-model
+          // variant mismatch is logged instead: a host that dropped the
+          // variant the pin recorded (pins survive restarts) would otherwise
+          // strand silently, which is the signature this reset exists to show.
+          if (!pinOwnPick(currentRef, pin)) {
+            if (pinVariantDrift(currentRef, pin)) noteRestSkip(sessionID, "variant differs from the pinned pick")
+            return
+          }
           if (!pinIsRoute && currentRef.variant === "default") return
           const restingEntry = pinIsRoute
             ? pseudoEntryOfRef(routeEntries, pin?.entry ?? pin?.from)
             : null
-          if (pinIsRoute && !restingEntry) return // stale pin from a removed entry
+          if (pinIsRoute && !restingEntry) return noteRestSkip(sessionID, "stale pin (entry removed)")
+          // Resting point: the entry the route-pin names, else the default
+          // variant of the model the pick landed on. The pin names the exact
+          // entry, so auto and auto-review never restore into each other.
           const resting = restingEntry
             ? { providerID: restingEntry.providerID, modelID: restingEntry.modelID, variant: "default" }
             : { providerID: currentRef.providerID, modelID: currentRef.modelID, variant: "default" }
@@ -5243,7 +5344,6 @@ export default Plugin.define({
         if (typeof events?.subscribe !== "function") {
           console.log("[jev] idle-compaction: event subscription unavailable on this OpenCode version - skipped")
         } else {
-          let registered = false
           const compactionInflight = new Set<string>()
           // A dead deployment fails every idle pass identically: without a
           // backoff, a surfaced failure row woke a turn, the turn ended in
@@ -5352,36 +5452,12 @@ export default Plugin.define({
               compactionInflight.delete(sessionID)
             }
           }
-          try {
-            const stream: any = await events.subscribe()
-            if (stream && typeof (stream as any)[Symbol.asyncIterator] === "function") {
-              registered = true
-              let stopped = false
-              idleDisposers.push(() => {
-                stopped = true
-              })
-              ;(async () => {
-                try {
-                  for await (const e of stream as any) {
-                    if (stopped) break
-                    const sessionID = idleSessionID(e)
-                    if (sessionID) await handleIdleCompaction(sessionID)
-                  }
-                } catch (err: any) {
-                  console.error(`[jev] idle-compaction: subscription ended (${String(err?.message ?? err)})`)
-                }
-              })()
-            } else if (typeof stream === "function") {
-              await stream("session.idle", (e: any) => {
-                const sessionID = idleSessionID(e)
-                if (sessionID) void handleIdleCompaction(sessionID)
-              })
-              registered = true
-            }
-          } catch (err: any) {
-            console.error(`[jev] idle-compaction: subscription failed (${String(err?.message ?? err)})`)
-          }
-          if (!registered) console.log("[jev] idle-compaction: unusable event subscription - skipped")
+          // Same consumer contract as the resting reset and the done-check:
+          // one stream per feature, re-attached with backoff, so a stream
+          // killed by a restart cannot take idle compaction down for the rest
+          // of the process lifetime (it used to log "subscription ended" and
+          // never watch again).
+          await subscribeIdle((sessionID) => handleIdleCompaction(sessionID), "idle-compaction")
         }
       }
 

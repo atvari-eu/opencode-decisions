@@ -2022,6 +2022,59 @@ export function pinMatches(last: { to: any; from: any } | undefined | null, pin:
   return refKey(last.to) === refKey(pin.to) && refKey(last.from) === refKey(pin.from)
 }
 
+// Refs reach us in both spellings: transcript rows and stored pins carry `id`,
+// caller-built refs carry `modelID` (same tolerance as emergencyRealModel's
+// consider()).
+const refKeyAny = (ref: any): string =>
+  refKey({ providerID: ref?.providerID, id: ref?.id ?? ref?.modelID, variant: ref?.variant })
+
+/** True when a session's current selection IS the pick its pin records: the
+ * only state the idle resting reset may pull back to the resting point.
+ * Compared against the pin's target alone - the transcript's `from` drifts on
+ * legitimate plugin switches (the wake-path exit records its own pin), and a
+ * missing or foreign `from` must not strand a routed session off its entry
+ * with routing disengaged. A manual pick differs in `to`, so it still stands
+ * down. The one intent this cannot see is a deliberate re-pick of the very
+ * model the pin names: the selection does not change, so the host records no
+ * switch to stand down on, and the next idle pulls back to the resting point. */
+export function pinOwnPick(current: any, pin: PinRecord | undefined | null): boolean {
+  if (!current || !pin?.to) return false
+  return refKeyAny(current) === refKeyAny(pin.to)
+}
+
+/** True when the live selection is the pin's own MODEL but not its variant:
+ * the shape a silent strand hides behind (a host that drops the variant a pin
+ * recorded, pins surviving restarts), as opposed to a plain manual model pick,
+ * which differs in model and stands down without a word. The reset logs this
+ * one so the case stays visible - a deliberate manual variant pick reads the
+ * same line and says plainly which side of the line it fell on. */
+export function pinVariantDrift(current: any, pin: PinRecord | undefined | null): boolean {
+  if (!current || !pin?.to) return false
+  if (refKeyAny(current) === refKeyAny(pin.to)) return false
+  // refKey normalizes an absent variant to "default" on both sides, so this
+  // compares provider + model only.
+  const modelOf = (ref: any): string => refKey({ providerID: ref?.providerID, id: ref?.id ?? ref?.modelID })
+  return modelOf(current) === modelOf(pin.to)
+}
+
+/** The pin every plugin switch that LEAVES an auto entry records: where the
+ * session now sits (`to`), the entry it left (`from`), and which entry the
+ * resting reset restores (`entry`). Shared by the pre-judge fail-safe and the
+ * wake-path exit so the two shapes cannot drift - a switch that leaves no pin
+ * of its own makes the next reset skip on a mismatched target. */
+export function entryExitPin(
+  entry: { providerID: string; modelID: string },
+  to: { providerID?: string; id?: string; modelID?: string; variant?: string },
+): PinRecord {
+  const modelID = to?.id ?? to?.modelID ?? ""
+  const variant = typeof to?.variant === "string" && to.variant !== "default" ? to.variant : undefined
+  return {
+    to: { providerID: to?.providerID ?? "", id: modelID, ...(variant ? { variant } : {}) },
+    from: { providerID: entry.providerID, id: entry.modelID },
+    entry: { providerID: entry.providerID, modelID: entry.modelID },
+  }
+}
+
 // Emergency fallback target when a session sits on the auto entry and its
 // turn must not execute there (judge failure, no usable candidates, no
 // configured fallback, or a synthetic wake that bypasses the prompt hook):

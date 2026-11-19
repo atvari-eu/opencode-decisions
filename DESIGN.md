@@ -333,7 +333,8 @@ pin storage). Rationale worth remembering when extending it:
   is skipped (logged) instead of waking a dead turn.
   Idle reset (the resting point pull-back - auto entry or, for plain
   auto effort, the model's default variant) lives in a shared idle
-  subscription and only touches plugin-made switches (`pinMatches`),
+  subscription and only touches plugin-made switches (proven by the
+  pin's own target against the live selection),
   is best effort (no usable idle events = stays parked until the next
   prompt re-routes), and writes its own pin so the chain stays
   verifiable. In v2 the end of a turn is the terminal
@@ -342,6 +343,31 @@ pin storage). Rationale worth remembering when extending it:
   extractor accepts both; subscribing to execution events also puts the
   resting point back IMMEDIATELY after the turn, so the picker reads the
   auto entry at rest and the per-turn pick stays invisible to the user.
+  **Resting-reset hardening** (2026-11-18): a skipped pull-back is not
+  cosmetic - off the entry, routing disengages and the picker keeps
+  showing the real model, which is exactly what "sometimes it does not go
+  back to Auto" looked like. Three defects closed. (1) The gate demanded
+  the newest `model-switched` row match the pin on BOTH ends, so any
+  legitimate `from` drift (see (2)) or an unreadable context - no row at
+  all - stranded the session. The reset now proves provenance from the
+  live selection alone: `pinOwnPick` compares the session's current model
+  against the pin's `to`, a manual model pick still differs in `to` and
+  stands down silently, and the transcript read is gone from the
+  reset entirely. (2) `ensureOffEntry` (the done-check notice and idle
+  compaction) used to switch off an entry without recording a pin, so the
+  next reset had nothing naming the pick and the session stayed off its
+  entry for good; it now records one through `entryExitPin`, the helper the
+  pre-judge fail-safe writes too, so the two shapes cannot drift. (3) Every
+  idle subscription (reset, done-check, idle compaction) re-attaches with
+  backoff when its stream ends - a stream killed by a restart or a
+  transient error used to take that feature down for the rest of the
+  process lifetime, and an empty stream climbs the backoff instead of
+  spinning a retry-and-warn cycle. Skips that indicate a real failure
+  (unreadable session model, stale pin, a same-model variant mismatch -
+  which is what a host that dropped the recorded variant looks like) log
+  once per session per minute, and a routed session admitted while it
+  still sits on its pinned pick logs that the reset never ran - the
+  otherwise-silent signature of a dead event stream.
 - **Engagement gate rework** (after the entry's lived reality): originally
   auto routing engaged on every prompt of any session and used pins to
   detect foreign manual picks ("stand down until back at base"). Gating it
