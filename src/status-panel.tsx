@@ -127,9 +127,16 @@ function Panel(props: {
         run: () => {
           const update = props.rank?.[1]
           if (typeof update !== "function") return
-          update((draft: RankStore) => {
-            draft.rankingExpanded = !draft.rankingExpanded
-          })
+          // The host's store mutation returns a promise that can reject (a
+          // failed disk write); an unhandled rejection must not surface as a
+          // slot crash after the toggle already applied.
+          try {
+            void Promise.resolve(
+              update((draft: RankStore) => {
+                draft.rankingExpanded = !draft.rankingExpanded
+              }),
+            ).catch(() => {})
+          } catch {}
         },
       },
       {
@@ -139,7 +146,9 @@ function Panel(props: {
         run: () => {
           const snapshot = state()
           if (!snapshot.status) return
-          copy(statusText(snapshot.status, items(), snapshot.at || Date.now(), rank().rankingExpanded))
+          try {
+            copy(statusText(snapshot.status, items(), snapshot.at || Date.now(), rank().rankingExpanded))
+          } catch {}
         },
       },
     ],
@@ -169,7 +178,19 @@ function Panel(props: {
             )
             return nodes
           }
-          const sections = statusSections(snapshot.status, items(), snapshot.at || Date.now(), rank().rankingExpanded)
+          let sections: ReturnType<typeof statusSections>
+          try {
+            sections = statusSections(snapshot.status, items(), snapshot.at || Date.now(), rank().rankingExpanded)
+          } catch (err) {
+            // A stale persisted snapshot (plugin hot-reloaded under an older
+            // shape) must degrade to a readable line, never crash the slot.
+            nodes.push(
+              <text selectable={false} wrapMode="word">
+                {`status unavailable: ${String((err as Error)?.message ?? err)}`}
+              </text>,
+            )
+            return nodes
+          }
           for (const section of sections) {
             nodes.push(
               <text selectable={false} fg={muted()} marginTop={1}>
