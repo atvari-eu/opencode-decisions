@@ -216,6 +216,17 @@ import {
   resolveApproval,
   routeTurn,
   resolveProviderBaseURL,
+  escalationHash,
+  escalationAction,
+  escalationGrantsKey,
+  escalationNote,
+  escalationGrantsCover,
+  escalationWaiverMatches,
+  parseEscalation,
+  pruneEscalationGrants,
+  REQUEST_APPROVAL_TOOL,
+  ESCALATION_GRANT_TTL_MS,
+  type EscalationWaiver,
   screenApplies,
   screenNeedsAttention,
   screenVerdict,
@@ -2030,6 +2041,16 @@ export default Plugin.define({
     // sandbox-aware wording (out-of-allow-set operations fail harmlessly) and
     // the note rides in the judged state; deterministic gates always hold.
     const approvalsSandboxNote = approvalSandboxNote(approvalsObj.sandbox)
+    // Agent-initiated escalation (approvals.escalation, on by default; only
+    // an explicit false disables): the
+    // request_approval tool plus a one-per-session pending waiver and
+    // hash-scoped grants. The agent only gains the ability to provoke a
+    // prompt after a gate or judged-refusal denial; onGate/onRefuse stay
+    // untouched and deny remains the outcome whenever no waiver exists.
+    const approvalsEscalation = parseEscalation(approvalsObj.escalation)
+    if (approvalsObj.escalation !== undefined && !approvalsEscalation) {
+      console.log("[jev] approvals: ignoring unsupported escalation value - use true")
+    }
     const location = (ctx as any).location?.directory ?? ""
 
     // Every failed jev call posts a "[jev-error] …" synthetic row - there is
@@ -2056,6 +2077,10 @@ export default Plugin.define({
     // before the first emitter use, and assigned by the registration block
     // below; undefined until then / on hosts without event support.
     let rpcRegistration: any
+
+    // Abort handle for the escalation permission-event subscription, set by
+    // the approvals block and aborted by the setup cleanup.
+    let escalationEventCleanup: (() => void) | undefined
 
     // UI-only notification transport. Returns false when the host offers no
     // event surface, so callers can keep the old synthetic-row fallback for
@@ -2450,7 +2475,7 @@ export default Plugin.define({
       rows.push({
         name: "approvals",
         state: approvalsEnabled
-          ? `on · ${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? " · sandbox" : ""} · bars ${approvalsMinConfidence.approve.toFixed(2)}/${approvalsMinConfidence.refuse.toFixed(2)} · stats ${approvalsStats ? "on" : "off"} · ro ${approvalsReadonlyAllow ? "allow" : "judge"}`
+          ? `on · ${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? " · sandbox" : ""}${approvalsEscalation ? " · esc" : ""} · bars ${approvalsMinConfidence.approve.toFixed(2)}/${approvalsMinConfidence.refuse.toFixed(2)} · stats ${approvalsStats ? "on" : "off"} · ro ${approvalsReadonlyAllow ? "allow" : "judge"}`
           : "off",
       })
       rows.push({
@@ -3594,9 +3619,13 @@ export default Plugin.define({
               ...(event0.readonly ? { readonly: true } : {}),
               // Rule resolutions carry their `reason/rule-*` tag here too, so
               // the audit panel can label them like the read-only fast path;
-              // `nested` labels the child-session policy the same way.
+              // `nested` labels the child-session policy, `grant`/`waiver`
+              // the escalation outcomes the same way.
               ...(typeof event0.reason === "string" &&
-              (event0.reason.startsWith("rule-") || event0.reason === "nested")
+              (event0.reason.startsWith("rule-") ||
+                event0.reason === "nested" ||
+                event0.reason === "grant" ||
+                event0.reason === "waiver")
                 ? { reason: event0.reason }
                 : {}),
             })
@@ -3670,6 +3699,222 @@ export default Plugin.define({
           }
         }
 
+        // -- agent-initiated escalation (approvals.escalation) --
+        // One pending waiver per session; the channel's contract (a waiver
+        // prompts, never allows; no waiver/no grant = deny stands) lives
+        // with the pure helpers in logic.ts.
+        const pendingWaivers = new Map<string, EscalationWaiver>()
+        const sessionGrants = new Map<string, number>()
+        const takeWaiver = (
+          sessionID: string | undefined,
+          action: string,
+          resources: readonly string[],
+        ): EscalationWaiver | undefined => {
+          if (!sessionID) return undefined
+          const waiver = pendingWaivers.get(sessionID)
+          if (!waiver || !escalationWaiverMatches(waiver, action, resources)) return undefined
+          waiver.converted = true
+          return waiver
+        }
+        // This process is the only writer (replies arrive here), so the
+        // in-memory blob is authoritative; a storage fault reads as "no
+        // grants" and the deny stands. Session grants die with the process.
+        const GRANTS_KEY = escalationGrantsKey(location)
+        let grantsLoaded = false
+        let projectGrants: Record<string, number> = {}
+        const loadGrants = async (): Promise<Record<string, number>> => {
+          if (grantsLoaded) return projectGrants
+          try {
+            projectGrants = pruneEscalationGrants(await (ctx as any).storage.get(GRANTS_KEY))
+            grantsLoaded = true
+          } catch {
+            // retry on the next request - an empty blob keeps every deny
+          }
+          return projectGrants
+        }
+        const pinProjectGrants = async (hashes: readonly string[]): Promise<void> => {
+          const blob: Record<string, number> = { ...(await loadGrants()) }
+          const expiresAt = Date.now() + ESCALATION_GRANT_TTL_MS
+          for (const hash of hashes) blob[hash] = expiresAt
+          projectGrants = pruneEscalationGrants(blob)
+          grantsLoaded = true
+          await (ctx as any).storage.set(GRANTS_KEY, projectGrants)
+        }
+        const grantsCover = async (
+          action: string,
+          resources: readonly string[],
+          sessionID: string | undefined,
+        ): Promise<boolean> =>
+          escalationGrantsCover(sessionGrants, sessionID, await loadGrants(), action, resources)
+
+        // Only a prompt whose action/resources match this session's waiver
+        // links, so the host's unrelated prompts never mint grants.
+        const pendingReplies = new Map<string, { sessionID: string; hashes: string[]; waiverHash: string }>()
+        const handlePermissionEvent = (ev: any): void => {
+          const type = String(ev?.type ?? "")
+          const data = ev?.data ?? {}
+          if (type === "permission.asked") {
+            const sessionID = typeof data?.sessionID === "string" ? data.sessionID : ""
+            const action = String(data?.action ?? "")
+            const waiver = pendingWaivers.get(sessionID)
+            if (
+              !waiver ||
+              escalationAction(waiver.action) !== escalationAction(action) ||
+              !Array.isArray(data?.resources)
+            )
+              return
+            const hashes = (data.resources as unknown[])
+              .map((item) => escalationHash(action, normalizeWorkspacePath(location, String(item ?? ""))))
+            if (!hashes.includes(waiver.hash)) return
+            const requestID = String(data?.id ?? data?.requestID ?? "")
+            // Linking under "" would let any later unidentified reply mint
+            // grants from this one.
+            if (!requestID) return
+            if (pendingReplies.size > 200) pendingReplies.clear()
+            pendingReplies.set(requestID, { sessionID, hashes, waiverHash: waiver.hash })
+            return
+          }
+          if (type !== "permission.replied") return
+          const requestID = String(data?.requestID ?? "")
+          const link = pendingReplies.get(requestID)
+          pendingReplies.delete(requestID)
+          if (!link) return
+          const reply = String(data?.reply ?? "")
+          if (reply === "once") {
+            const expiresAt = Date.now() + ESCALATION_GRANT_TTL_MS
+            for (const hash of link.hashes) sessionGrants.set(`${link.sessionID}|${hash}`, expiresAt)
+          } else if (reply === "always") {
+            void pinProjectGrants(link.hashes).catch(() => {})
+          }
+          // The waiver the prompt was raised from is spent; a waiver the
+          // agent replaced after the prompt keeps its own retry.
+          if (pendingWaivers.get(link.sessionID)?.hash === link.waiverHash) {
+            pendingWaivers.delete(link.sessionID)
+          }
+        }
+        const eventApi = (ctx as any).event
+        if (approvalsEscalation && typeof eventApi?.subscribe === "function") {
+          // Re-attach with backoff (the idle features' pattern): a stream
+          // that ended used to leave grant pinning silently dead for the
+          // rest of the process lifetime.
+          let controller = new AbortController()
+          let stopped = false
+          escalationEventCleanup = () => {
+            stopped = true
+            controller.abort()
+          }
+          void (async () => {
+            let delay = 5_000
+            let empty = 0
+            while (!stopped) {
+              let seen = 0
+              try {
+                for await (const ev of eventApi.subscribe({
+                  types: ["permission.asked", "permission.replied"],
+                  signal: controller.signal,
+                })) {
+                  seen += 1
+                  try {
+                    handlePermissionEvent(ev)
+                  } catch (err: any) {
+                    console.error(`[jev] escalation: permission event handling failed (${String(err?.message ?? err)})`)
+                  }
+                }
+                if (stopped) return
+                console.error("[jev] escalation: permission event stream ended - reattaching")
+              } catch (err: any) {
+                if (stopped) return
+                console.error(`[jev] escalation: permission event stream failed (${String(err?.message ?? err)}) - reattaching`)
+              }
+              // A stream that carried events starts the backoff over; one
+              // that ends immediately climbs 5 s -> 60 s so a broken host
+              // warns once a minute instead of spinning.
+              if (seen > 0) {
+                delay = 5_000
+                empty = 0
+              } else {
+                delay = Math.min(5_000 * 2 ** empty, 60_000)
+                empty += 1
+              }
+              await new Promise((resolve) => setTimeout(resolve, delay))
+              if (stopped) return
+              controller = new AbortController()
+            }
+          })()
+        } else if (approvalsEscalation) {
+          console.log("[jev] approvals: escalation event surface unavailable - grants will not pin on this host")
+        }
+
+        // The escalation tool itself. The next identical permission request
+        // is what gets held; the tool call only stores the waiver.
+        const toolApi = (ctx as any).tool
+        if (approvalsEscalation && toolApi?.transform) {
+          try {
+            await toolApi.transform((editor: any) => {
+              editor.add({
+                name: REQUEST_APPROVAL_TOOL,
+                description:
+                  "Ask the operator to approve a denied action - only when you cannot complete the task without it. If the denial is valid for your task (you do not actually need that secret or path, or another approach works), continue without it and do not call this tool. Call ONLY after a permission denial (a gate hold or a judged refusal): pass the exact action and the exact resource string of the denied call, plus your reason. The next identical request is then held at the operator's prompt with your reason instead of being denied. One pending request at a time - another call replaces it. The operator may approve once, always, or reject; a rejection leaves the denial standing. Never use this to retry around a refusal with reworded requests - fix the approach instead.",
+                input: {
+                  type: "object",
+                  properties: {
+                    action: {
+                      type: "string",
+                      description:
+                        "The denied permission action (shell, edit, external_directory, ...), exactly as the denial concerned it.",
+                    },
+                    resource: {
+                      type: "string",
+                      description:
+                        "The exact denied resource string - the full command or path as passed to the denied tool call.",
+                    },
+                    reason: {
+                      type: "string",
+                      description:
+                        "Why you believe the operator should allow this: the task need, safety notes, and what you will do instead if it is denied again.",
+                    },
+                  },
+                  required: ["action", "resource", "reason"],
+                  additionalProperties: false,
+                },
+                options: { codemode: false },
+                execute: async (input: any, context: ToolContext) => {
+                  const action = typeof input?.action === "string" ? input.action.trim().slice(0, 64) : ""
+                  const resource = typeof input?.resource === "string" ? input.resource.trim().slice(0, 4000) : ""
+                  const reason = typeof input?.reason === "string" ? input.reason.trim().slice(0, 1000) : ""
+                  if (!action || !resource) {
+                    return {
+                      content:
+                        "[jev] request_approval: both 'action' and 'resource' are required - pass the exact action and resource string of the denied call.",
+                    }
+                  }
+                  const sessionID = typeof context?.sessionID === "string" ? context.sessionID : ""
+                  if (!sessionID) {
+                    return { content: "[jev] request_approval: no session context - cannot store a waiver." }
+                  }
+                  const hash = escalationHash(action, normalizeWorkspacePath(location, resource))
+                  const replaced = pendingWaivers.has(sessionID)
+                  // Deterministic redaction: the reason rides the operator's
+                  // prompt and the in-memory waiver, never a secret.
+                  pendingWaivers.set(sessionID, {
+                    action,
+                    hash,
+                    reason: redactText(reason).text,
+                    at: Date.now(),
+                  })
+                  return {
+                    content: `[jev] escalation stored for ${action} (${hash.slice(0, 12)}).${replaced ? " The previous pending request was replaced." : ""} Retry the denied action now - its next permission check is held at the operator's prompt with your reason. If it is denied again unchanged, the waiver was consumed or expired: call request_approval again.`,
+                  }
+                },
+              })
+            })
+          } catch (err: any) {
+            console.error(`[jev] approvals: escalation tool registration failed (${String(err?.message ?? err)})`)
+          }
+        } else if (approvalsEscalation) {
+          console.log("[jev] approvals: escalation tool registration unavailable on this OpenCode version - skipped")
+        }
+
         await permissionApi.hook("evaluate", async (event: any) => {
           // Bound outside the try so the catch block can still log stats:
           // the judge-failure path was itself ReferenceError-ing on
@@ -3692,6 +3937,42 @@ export default Plugin.define({
             if (event?.effect !== "ask") return
             if (resources.length === 0) return
 
+            const matched = lookupPermission(action, resources, approvalsRules)
+            const chainEffect =
+              matched?.effect === "system-one" ? null : chainPermissionEffect(action, resources, approvalsRules)
+            const nestedBuiltin = Boolean(
+              matched && isBuiltinAllowRule(matched) && NESTED_SESSION_ACTIONS.has(action),
+            )
+
+            // The escalation tool itself: no side effect beyond the pending
+            // waiver it stores - the human decision happens at the denied
+            // request's prompt, not here. An operator rule for it still
+            // ranks above (matched truthy falls through to normal handling).
+            if (approvalsEscalation && action === REQUEST_APPROVAL_TOOL && !matched) {
+              event.effect = "allow"
+              console.log("[jev] approval: escalation tool allowed (no operator rule)")
+              return
+            }
+
+            // Pinned escalation grants (approvals.escalation): an operator
+            // decision on this exact (action, resource hash) already - a
+            // "once" or "always" reply to the agent's request_approval
+            // escalation - lets the repeated identical run past the gates
+            // and the judge. Explicit deny rules rank above (the deny paths
+            // below run first for chainEffect === "deny"), and the nested
+            // child-session policy is never grant-covered.
+            if (
+              approvalsEscalation &&
+              chainEffect !== "deny" &&
+              !nestedBuiltin &&
+              (await grantsCover(action, resources, event?.sessionID))
+            ) {
+              event.effect = "allow"
+              console.log(`[jev] approval: pinned grant allows ${action} ${resources.join(" && ").slice(0, 120)}`)
+              await recordApprovalStat(action, resources, { outcome: "allow", reason: "grant" }, event?.sessionID)
+              return
+            }
+
             // Built-in secret-path gate, ahead of rule resolution so a
             // config allow (read * / grep *) cannot wave secret paths
             // through; approvals.gates.secrets = false skips it.
@@ -3703,6 +3984,17 @@ export default Plugin.define({
               )
               if (hit) {
                 const deny = approvalsPolicy.onGate === "deny"
+                const waiver = deny ? takeWaiver(event?.sessionID, action, resources) : undefined
+                if (waiver) {
+                  // The agent escalated this exact denial: surface it at
+                  // the operator's prompt with the agent's reason instead
+                  // of dying silently.
+                  event.message = escalationNote(waiver.reason, "secret-path gate")
+                  annotate(event, "[jev] gate: secret path - escalated to you")
+                  console.log(`[jev] approval: secret-path gate escalated ${action} at the agent's request`)
+                  await recordApprovalStat(action, resources, { outcome: "ask", reason: "waiver" }, event?.sessionID)
+                  return
+                }
                 if (deny) {
                   event.effect = "deny"
                   event.message = "[jev] approval: denied by secret-path gate"
@@ -3717,7 +4009,6 @@ export default Plugin.define({
                 return
               }
             }
-            const matched = lookupPermission(action, resources, approvalsRules)
 
             // Deterministic, once-per-session agent-context note from the
             // matched permission rule's `hint` field: operator-configured
@@ -3750,7 +4041,7 @@ export default Plugin.define({
             // keep the built-in allow. Operator rules still win - `matched`
             // only identifies a default by object identity, and a parsed
             // operator entry of the same shape is a different object.
-            if (matched && isBuiltinAllowRule(matched) && NESTED_SESSION_ACTIONS.has(action)) {
+            if (nestedBuiltin) {
               const isChild = await childSession(event?.sessionID)
               const decision = nestedSessionDecision(approvalsNestedSessions, isChild, action)
               if (decision === "deny") {
@@ -3778,8 +4069,6 @@ export default Plugin.define({
             // resolve to the strongest segment opinion so a `git commit … &&
             // git push` cannot evade the push ask-rule on the whole command's
             // prefix (chainPermissionEffect).
-            const chainEffect =
-              matched?.effect === "system-one" ? null : chainPermissionEffect(action, resources, approvalsRules)
             if (chainEffect === "allow") {
               event.effect = "allow"
               console.log(`[jev] approval: rule ${action} ${resources.join(" && ").slice(0, 120)} -> allow`)
@@ -3833,6 +4122,18 @@ export default Plugin.define({
                   })
                 ) {
                   const deny = approvalsPolicy.onGate === "deny"
+                  const waiver = deny ? takeWaiver(event?.sessionID, action, resources) : undefined
+                  if (waiver) {
+                    // The agent escalated this exact denial: surface it at
+                    // the operator's prompt with the agent's reason instead
+                    // of dying silently.
+                    event.message = escalationNote(waiver.reason, "approval gate")
+                    annotate(event, "[jev] gate: potentially destructive or sensitive - escalated to you")
+                    console.log(`[jev] approval: gate escalated ${action} at the agent's request`)
+                    await recordApprovalStat(action, resources, { outcome: "ask", reason: "waiver" }, event?.sessionID)
+                    await postHint("ask")
+                    return
+                  }
                   if (deny) {
                     event.effect = "deny"
                     event.message = "[jev] approval: denied by approval gate"
@@ -3958,6 +4259,30 @@ export default Plugin.define({
               return
             }
             if (outcome.effect === "deny") {
+              // The judged refusal (or an onNoVerdict deny) the agent
+              // escalated: hold it at the operator's prompt with the agent's
+              // reason instead of refusing. With no waiver the deny stands.
+              const waiver = takeWaiver(event?.sessionID, action, resources)
+              if (waiver) {
+                event.effect = "ask"
+                event.message = escalationNote(
+                  waiver.reason,
+                  outcome.verdict ? `judged ${outcome.verdict}` : "judged refusal",
+                )
+                annotate(event, outcome.note)
+                console.log(`[jev] approval: judged denial escalated ${action} at the agent's request`)
+                await recordApprovalStat(action, resources, {
+                  outcome: "ask",
+                  verdict: outcome.verdict,
+                  confidence: outcome.confidence,
+                  scores,
+                  reason: "waiver",
+                  latencyMs,
+                  usage: (reply as any).usage,
+                }, event?.sessionID)
+                await postHint("ask")
+                return
+              }
               event.effect = "deny"
               annotate(event, outcome.note)
               console.log(`[jev] approval: denied ${action} ${resources.join(" && ").slice(0, 120)} - ${outcome.note}`)
@@ -5498,7 +5823,7 @@ export default Plugin.define({
               )
               .join("+")
           : "off"
-      } done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} picker(${PICK_MODELS.length}${DECISION_SOURCE ? ":" + DECISION_SOURCE : ""}) (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
+      } done-check=${doneCheckAuto ? `auto(notify<${notifyBelow.toFixed(2)})` : "off"} find=${findEnabled ? "on" : "off"} approvals=${approvalsEnabled ? `on(${approvalsPolicy.onApprove}/${approvalsPolicy.onRefuse}/nv:${approvalsPolicy.onNoVerdict}/gate:${approvalsPolicy.onGate}${approvalsSandboxNote ? "+sandbox" : ""}${approvalsEscalation ? "+esc" : ""})` : "off"} compaction=${o.compaction?.enabled === true ? (o.compaction?.mode === "clean" ? "clean" : "replace") : "off"}${o.compaction?.enabled === true && (idleAuto.tokens > 0 || idleAuto.share > 0) ? `+idle(${idleAuto.tokens > 0 ? idleAuto.tokens : `${idleAuto.share}×window`})` : ""} picker(${PICK_MODELS.length}${DECISION_SOURCE ? ":" + DECISION_SOURCE : ""}) (provider=${providerOptionText(OPTIONS_PROVIDER ?? { kind: "console", id: "opencode" })} model=${resolveModel()} endpoint=${resolveEndpoint()})`,
     )
 
     // Plugin reload/unload must stop the idle loops: without a cleanup the
@@ -5510,6 +5835,13 @@ export default Plugin.define({
       for (const dispose of disposers) {
         try {
           dispose()
+        } catch {}
+      }
+      // Stop the escalation's permission-event subscription: a stacked old
+      // instance would keep correlating replies and pinning grants.
+      if (escalationEventCleanup) {
+        try {
+          escalationEventCleanup()
         } catch {}
       }
     }

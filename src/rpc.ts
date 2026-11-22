@@ -438,6 +438,7 @@ const events = {
         resource: STRING,
         verdict: STRING,
         confidence: NUMBER,
+        reason: STRING,
       },
       required: ["action", "outcome"],
       additionalProperties: false,

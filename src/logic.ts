@@ -3033,6 +3033,8 @@ export const SELF_SCREENED_TOOLS: Record<string, true> = {
   jev_screen: true,
   "jev/decide": true,
   "jev/judge_many": true,
+  // The escalation tool's output is guidance text, not fetched content.
+  request_approval: true,
 }
 
 export function screenApplies(tool: string, tools: ScreenTools, self: Readonly<Record<string, true>> = SELF_SCREENED_TOOLS): boolean {
@@ -5243,7 +5245,9 @@ export interface ApprovalInput {
  * judgment. Recorded into the stats bands (`reason/...`) so tuning can see
  * which check - or which rule - not just which score band, produced the
  * outcome. `"nested"` tags a child-session `subagent`/`question` request
- * resolved by `approvals.nestedSessions` before any judgment. */
+ * resolved by `approvals.nestedSessions` before any judgment. `"grant"` tags
+ * a request allowed by a pinned escalation grant, `"waiver"` a denial the
+ * agent escalated (approvals.escalation) instead of dying silently. */
 export type ApprovalReason =
   | "refuse-bar-met"
   | "hold-refuse"
@@ -5259,6 +5263,8 @@ export type ApprovalReason =
   | "rule-ask"
   | "rule-deny"
   | "nested"
+  | "grant"
+  | "waiver"
 
 export interface ApprovalOutcome {
   /** What the caller applies: allow auto-runs, deny refuses, ask prompts. */
@@ -5379,6 +5385,130 @@ export function resolveApproval(input: ApprovalInput): ApprovalOutcome {
   }
   if (harmful === undefined) return noVerdict(policy, "[jev] unclear (harmful unavailable)", "harmful-unavailable")
   return noVerdict(policy, `[jev] unclear (harmful ${fmtOf(harmful)})`, "harmful-over-ceiling")
+}
+
+// -- agent-initiated escalation (approvals.escalation) --
+//
+// The invariant this section exists to hold: a waiver converts a denial
+// into an operator PROMPT, never into an allow, and with no waiver and no
+// pinned grant every outcome is exactly what it was before. Deny stays the
+// default; the agent gains only the ability to provoke a prompt, the
+// operator keeps the final say.
+
+/** The agent-facing escalation tool; calling it has no side effect beyond
+ * storing one pending waiver. */
+export const REQUEST_APPROVAL_TOOL = "request_approval"
+
+/** Long enough for the agent's immediate retry to reach the gate, short
+ * enough that a stale request cannot convert a much later denial. */
+export const ESCALATION_WAIVER_TTL_MS = 120_000
+
+/** The host's own always-allow memory is the primary repeat-pass for
+ * prompts it owns; this TTL covers the plugin's hash-scoped grants. */
+export const ESCALATION_GRANT_TTL_MS = 24 * 60 * 60 * 1000
+
+/** Entry cap for the project-grant blob; eviction order lives in
+ * pruneEscalationGrants. */
+export const ESCALATION_GRANT_CAP = 64
+
+/** approvals.escalation → enabled. On by default; only an explicit `false`
+ * disables. A wrong-typed value fails closed to disabled: a typo like
+ * `"false"` must never leave the agent-facing tool switched on. */
+export function parseEscalation(raw: unknown): boolean {
+  return raw === undefined || raw === true
+}
+
+/** The shell permission action is "shell" on OpenCode v2 and "bash" on
+ * older releases (isShellAction), so both spellings must hash and match
+ * identically. */
+export function escalationAction(action: string): string {
+  return isShellAction(action) ? "shell" : action
+}
+
+/** The waiver/grant key for one exact request: sha256 over the canonical
+ * action and normalized resource. Hashing keeps operator prose out of the
+ * key and makes a grant pinnable from `permission.replied`, which carries
+ * no resource. */
+export function escalationHash(action: string, resource: string): string {
+  return createHash("sha256").update(`${escalationAction(action)}\n${resource}`).digest("hex")
+}
+
+/** One pending escalation: the denied request the agent wants surfaced. */
+export interface EscalationWaiver {
+  action: string
+  hash: string
+  /** Redacted: it rides the operator's prompt and the in-memory store. */
+  reason: string
+  at: number
+  /** Set once this waiver converted a denial into a prompt: it never
+   * converts a second one; a reply or expiry clears it. */
+  converted?: boolean
+}
+
+/** Whether this waiver converts the request being denied. Every mismatch
+ * fails closed to no match - none of them can relax a deny. */
+export function escalationWaiverMatches(
+  waiver: EscalationWaiver | undefined,
+  action: string,
+  resources: readonly string[],
+  now: number = Date.now(),
+): boolean {
+  if (!waiver || waiver.converted) return false
+  if (escalationAction(waiver.action) !== escalationAction(action)) return false
+  if (now - waiver.at > ESCALATION_WAIVER_TTL_MS) return false
+  return resources.some((resource) => escalationHash(action, resource) === waiver.hash)
+}
+
+/** Do pinned grants cover every resource of this request? `sessionGrants`
+ * keys are `${sessionID}|${hash}` ("once" replies), `projectGrants` the
+ * hash → expiry blob ("always" replies). */
+export function escalationGrantsCover(
+  sessionGrants: ReadonlyMap<string, number>,
+  sessionID: string | undefined,
+  projectGrants: Readonly<Record<string, number>>,
+  action: string,
+  resources: readonly string[],
+  now: number = Date.now(),
+): boolean {
+  if (!sessionID || resources.length === 0) return false
+  return resources.every((resource) => {
+    const hash = escalationHash(action, resource)
+    const sessionAt = sessionGrants.get(`${sessionID}|${hash}`)
+    if (sessionAt !== undefined && sessionAt > now) return true
+    const projectAt = projectGrants[hash]
+    return projectAt !== undefined && projectAt > now
+  })
+}
+
+/** The storage key for one location's grants: plugin storage is scoped to
+ * the plugin, not the project, so the key carries the location. */
+export function escalationGrantsKey(location: string | undefined): string {
+  return `jev-approval-grants/${location || "default"}`
+}
+
+/** Malformed or expired blobs rebuild as empty instead of throwing; at
+ * most `cap` entries survive, soonest expiry evicted. */
+export function pruneEscalationGrants(
+  blob: unknown,
+  now: number = Date.now(),
+  cap: number = ESCALATION_GRANT_CAP,
+): Record<string, number> {
+  const source =
+    blob && typeof blob === "object" && !Array.isArray(blob) ? (blob as Record<string, unknown>) : {}
+  const live: Array<[string, number]> = []
+  for (const [hash, expiresAt] of Object.entries(source)) {
+    if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt > now) live.push([hash, expiresAt])
+  }
+  live.sort((a, b) => a[1] - b[1])
+  return Object.fromEntries(live.slice(-cap))
+}
+
+/** The operator-facing prompt message: the agent's (already redacted)
+ * reason plus the enforcement point that denied the request, so the
+ * operator can tell a real danger from a rubric stretch. */
+export function escalationNote(reason: string, cause: string): string {
+  const clean = reason.replace(/\s+/g, " ").trim().slice(0, 400)
+  return `[jev] escalated by agent (${cause}): ${clean || "(no reason given)"}`
 }
 
 /** Classify a judgment failure for the stats: aborts/timeouts come from the

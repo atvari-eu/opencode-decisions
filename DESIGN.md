@@ -830,6 +830,43 @@ because nesting can be legitimate in custom agents; strict setups opt into
 `"deny"`. Outcomes carry `reason/nested` in the stats bands and the RPC
 approval event.
 
+Agent-initiated escalation (2026-11). With `onGate`/`onRefuse` at their
+`"deny"` defaults a gated or judged-refused action dies silently, and the
+observed counter-move is worse than a prompt: the agent retries the same
+intent with different phrasings until one slips past the pattern - an
+uncontrolled search around the gate. `approvals.escalation` (on by
+default, only an explicit `false` disables; wrong-typed values fail
+closed to disabled) registers the `request_approval` tool instead: after a
+denial the agent stores one pending waiver per session (the exact action +
+sha256 of the normalized resource, plus a redacted reason), and the next
+matching denial - the deterministic gates and the judged-refusal deny path
+only - converts to `ask`, so the human sees the reason at OpenCode's own
+prompt. The design deliberately keeps deny as the default outcome (no
+waiver, no change) and never auto-approves on a waiver: the conversion is
+the prompt, not a pass. The operator's answer arrives as host
+`permission.asked`/`permission.replied` events (one consumer per setup,
+re-attached with the idle features' backoff so a stream that ends cannot
+silently kill grant pinning); only prompts whose action/resources match the
+session's waiver link, so unrelated prompts never mint grants. The shell
+action's v1/v2 spellings ("bash"/"shell") hash and match identically.
+"once" pins a session-scoped grant (in-memory, dies with
+the process), "always" pins a project grant by hash with a 24 h TTL
+(storage `jev-approval-grants/<project directory>`, one blob per checkout,
+pruned and capped at 64 on write), "reject"
+pins nothing. A pinned grant allows the repeated identical request before
+the gates run - an explicit human decision, not a judged one - but it never
+overrides an `approvals.permissions` deny rule or the nestedSessions
+policy, and host-configured denies never reach the plugin at all. Fail-closed
+details: a storage fault reads as "no grants" (the deny stands); a
+wrong-typed `escalation` value fails closed to disabled; a waiver expires after two
+minutes, a converted waiver cannot convert a second identical denial, a
+reply never clears a waiver the agent replaced after its prompt was raised,
+and the tool itself is allowed without judgment
+(it has no side effect beyond the store). Outcomes carry `reason/grant`
+and `reason/waiver` in the stats bands and the RPC approval event;
+`/jev-audit` labels them `<outcome>/grant` (pinned operator decision) and
+`<outcome>/waiver` (agent-escalated prompt).
+
 ## Credential self-heal: re-read on worn-key diagnostics
 
 Long sessions can ride a stale CLI-store credential: the plugin (and the
