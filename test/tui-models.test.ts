@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test"
 import { jevModelTag } from "../src/logic"
-import { JEV_MODEL_STORE_KEY, type JevModelStore } from "../src/rpc"
+import { JEV_FAVORITES_STORE_KEY, JEV_MODEL_STORE_KEY, type JevFavoritesStore, type JevModelStore } from "../src/rpc"
 
 // The TUI plugin setup dynamically imports the solid-JSX modules; stub them
 // so tests never touch a JSX transform. footer-jev-model doubles as the
@@ -225,12 +225,52 @@ describe("/jev-models picker", () => {
       { title: "jev-broken", value: "jev-broken", description: "no: 401 unauthorized" },
     ])
     expect(dialogInput.current).toBe("jev-1.13")
-    expect(dialogInput.actions[0].bind).toBe("ctrl+r")
+    expect(dialogInput.actions.map((a: any) => a.bind)).toEqual(["ctrl+f", "ctrl+r"])
+    expect(dialogInput.actions[0].title).toBe("Favorite")
+
+    // ctrl+f stars the selected ref in the favorites store
+    dialogInput.actions[0].onTrigger("jev-1.13-free")
+    expect((harness.stores.get(JEV_FAVORITES_STORE_KEY)!.value as JevFavoritesStore).favorites).toEqual([
+      "jev-1.13-free",
+    ])
+    dialogInput.actions[0].onTrigger("jev-1.13-free")
+    expect((harness.stores.get(JEV_FAVORITES_STORE_KEY)!.value as JevFavoritesStore).favorites).toEqual([])
 
     // escaping without a pick changes nothing
     harness.setPickValue(undefined)
     await flush()
     expect(harness.calls.set.length).toBe(0)
+    await harness.context.cleanup()
+  })
+
+  test("favorited models list first under a Favorites category", async () => {
+    const harness = await setupCommand({ rpc: {}, dialog: true })
+    sessionHolder.current = "s1"
+    harness.setDescribe({
+      base: "jev-1.13-free",
+      models: [
+        { id: "jev-a" },
+        { id: "jev-b" },
+        { id: "jev-c" },
+      ],
+    })
+    harness.setPickValue(undefined)
+    const store = harness.stores.get(JEV_FAVORITES_STORE_KEY)!
+    ;(store.value as JevFavoritesStore).favorites = ["jev-c"]
+    harness.command.run("")
+    await flush(2)
+    const dialogInput = harness.selectCalls.at(-1)!
+    expect(dialogInput.options).toEqual([
+      { title: "jev-c", value: "jev-c", category: "Favorites", description: "(Favorite)" },
+      { title: "jev-a", value: "jev-a" },
+      { title: "jev-b", value: "jev-b" },
+    ])
+    // the dialog's own search keeps the favorites-first order
+    expect(dialogInput.search("e", dialogInput.options).map((o: any) => o.id ?? o.title)).toEqual([
+      "jev-c",
+      "jev-a",
+      "jev-b",
+    ])
     await harness.context.cleanup()
   })
 
@@ -252,7 +292,7 @@ describe("/jev-models picker", () => {
     harness.setPickValue(undefined)
     harness.command.run("")
     await flush(2)
-    const action = harness.selectCalls.at(-1)!.actions[0]
+    const action = harness.selectCalls.at(-1)!.actions.at(-1)!
     await action.onTrigger()
     expect(harness.calls.reset).toEqual([{ sessionID: "s1" }])
     expect(harness.dialogClears.length).toBe(1)

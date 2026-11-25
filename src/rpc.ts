@@ -534,3 +534,12 @@ export interface JevModelStore {
 }
 
 export const JEV_MODEL_STORE_KEY = "jev-model-label"
+
+// The TUI reactive store shape behind the picker's favorites: the picker refs
+// (bare ids or "<provider>/<id>") starred with the dialog's ctrl+f action,
+// listed under a Favorites section like the built-in /models picker.
+export interface JevFavoritesStore {
+  favorites?: string[]
+}
+
+export const JEV_FAVORITES_STORE_KEY = "jev-model-favorites"

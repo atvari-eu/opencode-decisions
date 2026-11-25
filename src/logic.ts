@@ -3885,6 +3885,24 @@ export function describeModelRows(
   })
 }
 
+/** Toggles one picker ref in the favorites list: order-stable, de-duped,
+ * favorite refs first. Unknown input never corrupts the list. */
+export function toggleFavoriteRef(favorites: readonly string[], ref: string): string[] {
+  const rest = favorites.filter((id) => id !== ref)
+  return rest.length === favorites.length ? [ref, ...favorites] : rest
+}
+
+/** Favorites first (their stored order), then the rest in picker order. */
+export function favoritesFirst<T extends { id: string }>(
+  rows: readonly T[],
+  favorites: readonly string[],
+): T[] {
+  const fav = new Set(favorites)
+  return [...rows].sort(
+    (a, b) => Number(fav.has(b.id)) - Number(fav.has(a.id)),
+  )
+}
+
 /** The reactive label store draft: the base chain model plus one entry per
  * session ("" means "checked, no pin"). Structurally the same shape the
  * picker writes and the footer marker reads over the label store. */

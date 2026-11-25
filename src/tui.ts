@@ -25,15 +25,17 @@ import {
   JEV_CONFIG_ERROR_MARK,
   SCREEN_NOTICE_MARK,
   jevModelTag,
+  favoritesFirst,
   parseScreenNotice,
   parseToastFilters,
   screenEventItemOf,
+  toggleFavoriteRef,
   toastVisible,
   type ScreenVerdictItem,
   type ToastEvent,
   type ToastLevel,
 } from "./logic"
-import { jevRpcClientOf, subscribeJevEvents, JEV_MODEL_STORE_KEY, type JevModelStore } from "./rpc"
+import { jevRpcClientOf, subscribeJevEvents, JEV_FAVORITES_STORE_KEY, JEV_MODEL_STORE_KEY, type JevFavoritesStore, type JevModelStore } from "./rpc"
 import { AUDIT_STORE_KEY, appendAudit, auditEntryOf, type AuditEntry, type AuditKind } from "./audit"
 import { STATUS_STORE_KEY, type StatusStore } from "./status"
 // Static imports: the TUI loader compiles these TSX modules with its Solid
@@ -54,23 +56,34 @@ interface ToastOptions {
   readonly sessionID?: string
 }
 
-interface SelectAction {
+type SelectAction = {
   readonly bind: string
   readonly title: string
   readonly side?: "left" | "right"
-  /** "none" keeps the dialog open for follow-ups (the picker's reset). */
-  readonly selection: "none"
-  readonly onTrigger: () => void | Promise<void>
-}
+} & (
+  | {
+      /** Unavailable while no option is selected (the picker's favorite). */
+      readonly selection?: "required"
+      readonly onTrigger: (value: string | undefined) => void | Promise<void>
+    }
+  | {
+      /** "none" keeps the dialog open for follow-ups (the picker's reset). */
+      readonly selection: "none"
+      readonly onTrigger: () => void | Promise<void>
+    }
+)
 
 interface SelectOptions {
   readonly title: string
   readonly placeholder?: string
   readonly current?: string
+  /** Own matching and order (favorites first); absent keeps the host search. */
+  readonly search?: (query: string, options: readonly any[]) => readonly any[]
   readonly options: ReadonlyArray<{
     readonly title: string
     readonly value: string
     readonly description?: string
+    readonly category?: string
   }>
   readonly actions?: ReadonlyArray<SelectAction>
 }
@@ -592,6 +605,11 @@ export default {
     const labelStore = context.storage.store(JEV_MODEL_STORE_KEY, {
       initial: { sessions: {} } as JevModelStore,
     })
+    // The picker's favorites (the dialog's ctrl+f action): one shared list of
+    // picker refs, durable and synced across TUI instances like the labels.
+    const favoritesStore = context.storage.store(JEV_FAVORITES_STORE_KEY, {
+      initial: { favorites: [] } as JevFavoritesStore,
+    })
     // Mirrors the pin into the footer label store; "" marks "no pin, shows
     // the chain model" so the slot never has to re-ask the server for it.
     const writeLabel = (sessionID: string, model: string): void => {
@@ -677,31 +695,60 @@ export default {
         }
         const pick = typeof info?.pick === "string" ? info.pick : ""
         const base = typeof info?.base === "string" ? info.base : ""
-        const actions = pick
-          ? [
-              {
-                bind: "ctrl+r",
-                title: "Reset",
-                side: "right" as const,
-                selection: "none" as const,
-                onTrigger: async () => {
-                  await resetPin(jev, sessionID)
-                  dialog.clear?.()
+        // Favorites snapshot at open: like the built-in /models picker,
+        // starring does not reorder the list until the dialog is reopened.
+        const favoritesAtOpen = [...(favoritesStore[0]?.favorites ?? [])]
+        const favorite = new Set(favoritesAtOpen)
+        const favoriteOptions = favoritesFirst(models, favoritesAtOpen)
+        const actions = [
+          {
+            bind: "ctrl+f",
+            title: "Favorite",
+            selection: "required" as const,
+            onTrigger: (id: unknown) => {
+              if (typeof id !== "string" || id === "") return
+              try {
+                favoritesStore[1]?.((draft: JevFavoritesStore) => {
+                  draft.favorites = toggleFavoriteRef(draft.favorites ?? [], id)
+                })
+              } catch {}
+            },
+          },
+          ...(pick
+            ? [
+                {
+                  bind: "ctrl+r",
+                  title: "Reset",
+                  side: "right" as const,
+                  selection: "none" as const,
+                  onTrigger: async () => {
+                    await resetPin(jev, sessionID)
+                    dialog.clear?.()
+                  },
                 },
-              },
-            ]
-          : undefined
+              ]
+            : []),
+        ]
         const picked = await dialog.select({
           title: "System One model for this session",
-          placeholder: "filter models (enter picks, ctrl+r resets)...",
+          placeholder: "filter models (enter picks, ctrl+f favorites, ctrl+r resets)...",
           current: pick || (models.some((m: any) => m.id === base) ? base : undefined),
-          options: models.map((m: any) => ({
+          // Own matching and order: favorites first, then the picker order;
+          // the default search would re-rank and bury them.
+          search: (query: string, options: readonly any[]) =>
+            options.filter((option) => option.title.toLowerCase().includes(query.toLowerCase())),
+          options: favoriteOptions.map((m: any) => ({
             title: m.id,
             value: m.id,
-            ...(typeof m.group === "string" && m.group ? { category: m.group } : {}),
-            ...(m.fault ? { description: `no: ${m.fault}` } : {}),
+            ...(favorite.has(m.id) ? { category: "Favorites" } : {}),
+            ...(typeof m.group === "string" && m.group && !favorite.has(m.id) ? { category: m.group } : {}),
+            ...(m.fault
+              ? { description: `no: ${m.fault}` }
+              : favorite.has(m.id)
+                ? { description: "(Favorite)" }
+                : {}),
           })),
-          ...(actions ? { actions } : {}),
+          actions,
         })
         if (!picked) return
         if (!models.some((m: any) => m.id === picked)) return
