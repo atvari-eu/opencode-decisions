@@ -21,7 +21,7 @@ export const JEV_RPC_ID = "jev-config"
  * stored pin if any, and the picker's candidate ids with cached faults. */
 export interface JevModelsInfo {
   base: string
-  models: Array<{ id: string; fault?: string }>
+  models: Array<{ id: string; fault?: string; group?: string }>
   pick?: string
 }
 
@@ -137,7 +137,7 @@ export interface JevStatusInfo {
     /** When the cached deployment verdict was taken (ISO). */
     checkedAt?: string
   }
-  models: Array<{ id: string; fault?: string }>
+  models: Array<{ id: string; fault?: string; group?: string }>
   features: Array<{ name: string; state: string }>
   pools: JevStatusPool[]
   /** Full ranking by each pool axis; absent when the session lists no

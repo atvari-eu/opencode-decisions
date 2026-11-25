@@ -30,7 +30,7 @@ Replies for identical (endpoint, model, state, questions) are served from durabl
 | `/jev-done-check` | completion self-check over the recent session transcript (see [Done-check](done-check.md)) |
 | `/jev-compact` | compacts the session now with jev decisions only, never falling back to the built-in summarizer (see [Compaction](compaction.md)) |
 | `/jev-approval-stats` | lists which command patterns trigger approvals and how they resolve, so recurring asks can become explicit permission rules (see [Approvals](approvals.md)) |
-| `/jev-models [<id> \| reset]` | pins the System One judgment model for this session; every pick is ping-verified before it sticks (see [Provider](provider.md)) |
+| `/jev-models [<id> \| reset]` | pins the System One judgment model for this session; every pick is ping-verified before it sticks (see [Provider](provider.md)). The picker lists the deployment's decision models first, then the decision models of every other provider set up in OpenCode with a credential (OpenCode Console, OpenCode Go, and any other provider in the decision catalog), each under its provider's section and pinned as `<provider>/<id>`, judged on that provider's route with its own key |
 | `/jev-audit` | opens the audit side panel with every UI-only event |
 | `/jev-status` | opens the status panel: decision model, session routing and agent, candidates, routing pools, the expandable full pool ranking (`p`), deployment health and credential provenance, enabled features, recent event severity |
 

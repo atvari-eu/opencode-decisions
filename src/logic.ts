@@ -3842,17 +3842,46 @@ export interface JevModelRow {
   /** The cached deployment fault for this id, when one was pinged and
    * failed; absent means available (or not verified yet). */
   fault?: string
+  /** Picker section label (the serving provider), absent for a flat list. */
+  group?: string
+}
+
+/** Picker section labels for the known OpenCode providers. Other providers
+ * show their provider id. Bare picker ids always mean the deployment's own
+ * catalog; "<provider>/<id>" refs name another configured provider. */
+export const PICKER_PROVIDER_LABELS: Record<string, string> = {
+  opencode: "OpenCode",
+  "opencode-go": "OpenCode Go",
+}
+
+/** The decision rows of the Go models endpoint and the System One api base
+ * they name. Non-decision rows and rows without an id are skipped. */
+export function parseGoDecisionModels(body: unknown): { models: string[]; api?: string } {
+  const data = (body as { data?: unknown } | null | undefined)?.data
+  if (!Array.isArray(data)) return { models: [] }
+  const models: string[] = []
+  let api: string | undefined = undefined
+  for (const raw of data) {
+    const row = raw as { id?: unknown; type?: unknown; api?: { systemone?: { base_url?: unknown } } } | null | undefined
+    if (row?.type !== "decision" || typeof row.id !== "string" || row.id === "") continue
+    models.push(row.id)
+    const base = row.api?.systemone?.base_url
+    if (api === undefined && typeof base === "string" && base.trim() !== "") api = base.trim()
+  }
+  return { models, api }
 }
 
 /** The describe() rows of the picker: candidate ids plus whatever verdict the
  * deployment check currently caches per id. */
 export function describeModelRows(
-  models: readonly string[],
+  models: readonly (string | { id: string; group?: string })[],
   faultOf?: (id: string) => string | undefined,
 ): JevModelRow[] {
-  return models.map((id) => {
+  return models.map((entry) => {
+    const id = typeof entry === "string" ? entry : entry.id
+    const group = typeof entry === "string" ? undefined : entry.group
     const fault = faultOf?.(id)
-    return { id, ...(fault ? { fault } : {}) }
+    return { id, ...(group ? { group } : {}), ...(fault ? { fault } : {}) }
   })
 }
 

@@ -5,9 +5,35 @@ import {
   effectiveJevModel,
   jevModelTag,
   normalizePickerModels,
+  parseGoDecisionModels,
   seedJevBaseLabel,
   settleUnverifiedJevSession,
 } from "../src/logic"
+
+describe("OpenCode Go decision models", () => {
+  test("parseGoDecisionModels keeps decision rows and their System One base", () => {
+    const body = {
+      data: [
+        { id: "glm-5.3", type: "chat" },
+        { id: "jev-1.14", type: "decision", api: { systemone: { base_url: "https://opencode.ai/inference/go/systemone/v1" } } },
+        { id: "gemini-decision-1", type: "decision" },
+        { type: "decision" },
+      ],
+    }
+    expect(parseGoDecisionModels(body)).toEqual({
+      models: ["jev-1.14", "gemini-decision-1"],
+      api: "https://opencode.ai/inference/go/systemone/v1",
+    })
+    expect(parseGoDecisionModels(null)).toEqual({ models: [] })
+  })
+
+  test("describeModelRows carries the picker group", () => {
+    expect(describeModelRows([{ id: "jev-1.13", group: "OpenCode" }, "jev-x"])).toEqual([
+      { id: "jev-1.13", group: "OpenCode" },
+      { id: "jev-x" },
+    ])
+  })
+})
 
 describe("normalizePickerModels", () => {
   test("absent/invalid option keeps the known defaults", () => {

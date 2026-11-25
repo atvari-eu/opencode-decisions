@@ -124,6 +124,8 @@ import {
   toastFloor,
   awaitingUserInput,
   describeModelRows,
+  parseGoDecisionModels,
+  PICKER_PROVIDER_LABELS,
   doneTranscript,
   doneVerdict,
   effectiveJevModel,
@@ -427,8 +429,10 @@ function invalidateCliStoreCredential(integration: string): void {
 }
 
 async function resolveKey(): Promise<Credential | undefined> {
-  // Prepared at init by resolveDeploymentEndpoint (registry-aware chain).
-  const chain = RESOLVED_CHAIN
+  return resolveKeyWith(RESOLVED_CHAIN)
+}
+
+async function resolveKeyWith(chain: CredentialChain): Promise<Credential | undefined> {
   for (const envName of chain.envKeys) {
     const value = process.env[envName]
     if (typeof value === "string" && value.trim() !== "") {
@@ -483,6 +487,96 @@ async function resolveKey(): Promise<Credential | undefined> {
 function resolveEndpoint(): string {
   if (process.env.JEV_ENDPOINT) return process.env.JEV_ENDPOINT
   return RESOLVED_ENDPOINT ?? CONSOLE_ENDPOINT
+}
+
+// OpenCode Go decision models (the Go models endpoint's type=decision rows),
+// and every other provider with decision models that has a credential set up
+// in OpenCode (DECISION_TARGETS). A picker ref "<provider>/<id>" resolves to
+// that provider's System One route and key chain (see targetFor); bare ids
+// keep meaning the resolved deployment.
+let GO_DECISIONS: string[] = []
+let GO_DECISION_API: string | undefined = undefined
+
+async function loadGoDecisions(): Promise<void> {
+  try {
+    const response = await fetch(GO_LIMITS_URL, { signal: AbortSignal.timeout(10_000) })
+    if (!response.ok) throw new Error(`opencode.ai answered ${response.status}`)
+    const parsed = parseGoDecisionModels(await response.json())
+    GO_DECISIONS = parsed.models
+    GO_DECISION_API = parsed.api
+    console.log(`[jev] discovery: Go decision models live (${GO_DECISIONS.length})`)
+  } catch (err) {
+    GO_DECISIONS = []
+    GO_DECISION_API = undefined
+    console.log(
+      `[jev] discovery: Go decision models unavailable (${String((err as Error)?.message ?? err)}) - no opencode-go picker entries`,
+    )
+  }
+}
+
+interface DecisionTarget {
+  endpoint: string
+  chain: CredentialChain
+  models: string[]
+}
+
+/** Providers with decision models and a credential set up in OpenCode, keyed
+ * by provider id. Filled once per process by discoverDecisionProviders. */
+let DECISION_TARGETS = new Map<string, DecisionTarget>()
+
+/** Every provider the decision catalog lists (plus the Go models endpoint for
+ * opencode-go) whose credential resolves: the Console and Go keys, a host
+ * provider's own key, or a credential in the CLI store. Credential reads are
+ * read-only, so the last-auth provenance is restored afterwards. */
+async function discoverDecisionProviders(): Promise<void> {
+  const ids = new Set(["opencode", "opencode-go", ...Object.keys(DECISION_INDEX)])
+  const found = new Map<string, DecisionTarget>()
+  const savedAuth = LAST_AUTH
+  for (const id of ids) {
+    const consoleProvider = id === "opencode" || id === "opencode-go"
+    const endpoint =
+      id === "opencode-go"
+        ? GO_DECISION_API
+          ? systemoneRoute(GO_DECISION_API)
+          : undefined
+        : decisionEndpointFor(id) ?? (id === "opencode" ? CONSOLE_SYSTEMONE : undefined)
+    const models = id === "opencode-go" ? GO_DECISIONS : (DECISION_INDEX[id]?.models ?? [])
+    if (!endpoint || models.length === 0) continue
+    const chain = credentialChain(
+      consoleProvider ? { kind: "console", id: id as "opencode" | "opencode-go" } : { kind: "host", id },
+    )
+    let cred: Credential | undefined
+    try {
+      cred = await resolveKeyWith(chain)
+    } catch {
+      cred = undefined
+    }
+    if (cred) found.set(id, { endpoint, chain, models })
+  }
+  LAST_AUTH = savedAuth
+  DECISION_TARGETS = found
+  console.log(
+    `[jev] discovery: decision models from ${found.size} configured provider(s): ${[...found.keys()].join(", ") || "none"}`,
+  )
+}
+
+interface JudgeTarget {
+  id: string
+  endpoint: string | undefined
+  chain: CredentialChain
+}
+
+/** The deployment a model ref judges on: a "<provider>/<id>" ref naming a
+ * discovered provider judges on that provider's route with its own key chain;
+ * a bare id targets the resolved deployment. Under JEV_ENDPOINT every ref
+ * keeps the override and fails closed at the endpoint's own model diagnostic. */
+function targetFor(ref: string): JudgeTarget {
+  const slash = ref.indexOf("/")
+  const provider = slash > 0 ? DECISION_TARGETS.get(ref.slice(0, slash)) : undefined
+  if (provider && !process.env.JEV_ENDPOINT) {
+    return { id: ref.slice(slash + 1), endpoint: provider.endpoint, chain: provider.chain }
+  }
+  return { id: ref, endpoint: process.env.JEV_ENDPOINT || RESOLVED_ENDPOINT, chain: RESOLVED_CHAIN }
 }
 
 // Options-set model wins over the env; both precede the baked default.
@@ -565,11 +659,12 @@ function resolveModel(): string {
 // or the unresolved-key form when no endpoint resolved yet (deployFaultText's
 // "no-endpoint" path uses the same key).
 function fingerprintOfModel(model: string): string {
-  if (!RESOLVED_ENDPOINT) {
+  const target = targetFor(model)
+  if (!target.endpoint) {
     const id = OPTIONS_PROVIDER?.kind === "host" ? OPTIONS_PROVIDER.id : ""
     return deploymentFingerprint(`unresolved:${id}|${model}`, model)
   }
-  return deploymentFingerprint(resolveEndpoint(), model)
+  return deploymentFingerprint(target.endpoint, model)
 }
 
 function toQuestionMap(questions: Question[]): Record<string, any> {
@@ -677,6 +772,7 @@ function execText(bin: string, args: string[]): Promise<string> {
 }
 
 async function jevRequest(
+  endpoint: string,
   cred: Credential | undefined,
   questions: Question[],
   state: unknown,
@@ -685,7 +781,7 @@ async function jevRequest(
   longContext: boolean,
 ): Promise<Response> {
   const ua = await hostClientUA()
-  return fetch(resolveEndpoint(), {
+  return fetch(endpoint, {
     method: "POST",
     headers: {
       ...(cred ? { Authorization: `Bearer ${cred.key}` } : {}),
@@ -720,6 +816,7 @@ function detailOf(text: string): string {
 }
 
 async function jevJudgeInner(
+  endpoint: string,
   resolveCred: () => Promise<Credential | undefined>,
   questions: Question[],
   state: unknown,
@@ -739,7 +836,7 @@ async function jevJudgeInner(
   const over = oversizedRequest(JSON.stringify({ state, questions: toQuestionMap(questions) }), longContext)
   if (over) throw new Error(over)
 
-  let response = await jevRequest(cred, questions, state, signal, model, longContext)
+  let response = await jevRequest(endpoint, cred, questions, state, signal, model, longContext)
   let text = await response.text()
   // A cached CLI-store key can expire or rotate between calls. On a
   // credential-class rejection (401, or a worn-credential diagnostic - see
@@ -756,7 +853,7 @@ async function jevJudgeInner(
     invalidateCliStoreCredential(cred.cliIntegration ?? "opencode")
     const fresh = await resolveCred()
     if (fresh && fresh.key !== cred.key) {
-      response = await jevRequest(fresh, questions, state, signal, model, longContext)
+      response = await jevRequest(endpoint, fresh, questions, state, signal, model, longContext)
       text = await response.text()
     }
   }
@@ -792,7 +889,17 @@ async function jevJudge(
   model: string = resolveModel(),
   longContext = false,
 ): Promise<JevReply> {
-  return jevJudgeInner(resolveKey, questions, state, signal, model, longContext)
+  const target = targetFor(model)
+  if (!target.endpoint) throw new Error(`jev: no System One endpoint for ${model}`)
+  return jevJudgeInner(
+    target.endpoint,
+    () => resolveKeyWith(target.chain),
+    questions,
+    state,
+    signal,
+    target.id,
+    longContext,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1311,6 +1418,8 @@ async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
     return
   }
   await fetchDecisionIndex(ctx)
+  await loadGoDecisions()
+  await discoverDecisionProviders()
   if (OPTIONS_PROVIDER?.kind === "host") {
     const baseURL = await providerBaseURL(ctx, OPTIONS_PROVIDER.id)
     if (baseURL) {
@@ -1358,12 +1467,17 @@ async function resolveDeploymentEndpoint(ctx: any): Promise<void> {
 /** The System One endpoint a provider's decision-catalog entry names, or
  * undefined when discovery answered nothing for that id. */
 function decisionEndpointFor(providerId: string): string | undefined {
-  const api = DECISION_INDEX[providerId]?.api
+  const api = providerId === "opencode-go" ? GO_DECISION_API : DECISION_INDEX[providerId]?.api
   return api ? systemoneRoute(api) : undefined
 }
 
-async function pingDeploy(cred: Credential | undefined, model: string, signal: AbortSignal): Promise<void> {
-  const response = await jevRequest(cred, PING_QUESTIONS, PING_STATE, signal, model, false)
+async function pingDeploy(
+  endpoint: string,
+  cred: Credential | undefined,
+  model: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await jevRequest(endpoint, cred, PING_QUESTIONS, PING_STATE, signal, model, false)
   const text = await response.text()
   if (!response.ok) {
     // Same legacy-shadow marker as the judged-call path: the ping's
@@ -1393,10 +1507,11 @@ async function checkDeployState(
 > {
   // An unresolved host id (no registry entry, no env override, no URL form)
   // fails closed on its own remedy instead of pinging a mismatched endpoint.
-  if (!RESOLVED_ENDPOINT) {
+  const model = requestedModel ?? resolveModel()
+  const target = targetFor(model)
+  const fingerprint = fingerprintOfModel(model)
+  if (!target.endpoint) {
     const id = OPTIONS_PROVIDER?.kind === "host" ? OPTIONS_PROVIDER.id : ""
-    const model = requestedModel ?? resolveModel()
-    const fingerprint = deploymentFingerprint(`unresolved:${id}|${model}`, model)
     return {
       ok: false,
       fingerprint,
@@ -1406,9 +1521,7 @@ async function checkDeployState(
       },
     }
   }
-  const endpoint = resolveEndpoint()
-  const model = requestedModel ?? resolveModel()
-  const fingerprint = deploymentFingerprint(endpoint, model)
+  const endpoint = target.endpoint
   const fault = (
     kind: DeploymentFault["kind"],
     detail?: string,
@@ -1419,12 +1532,12 @@ async function checkDeployState(
 
   let cred: Credential | undefined
   try {
-    cred = await resolveKey()
+    cred = await resolveKeyWith(target.chain)
   } catch {
     cred = undefined
   }
   try {
-    await pingDeploy(cred, model, AbortSignal.timeout(10_000))
+    await pingDeploy(endpoint, cred, target.id, AbortSignal.timeout(10_000))
     return { ok: true, fingerprint }
   } catch (err) {
     if (err instanceof SyntaxError) {
@@ -1456,7 +1569,7 @@ async function deployVerdict(model: string): Promise<DeployVerdict> {
   const fingerprint = fingerprintOfModel(model)
   const cached = DEPLOY_VERDICTS.get(fingerprint)
   if (cached) return cached
-  if (!RESOLVED_ENDPOINT) {
+  if (!targetFor(model).endpoint) {
     const attempted = await checkDeployState(model)
     const verdict: DeployVerdict = attempted.ok
       ? { ok: true, at: new Date().toISOString() }
@@ -2253,7 +2366,7 @@ export default Plugin.define({
           if (!cacheEnabled) {
             return { reply: await jevJudge(questions, state, signal, model, longContext), cached: false }
           }
-          const endpoint = resolveEndpoint()
+          const endpoint = targetFor(model).endpoint
           const key = `judgment/${createHash("sha256")
             .update(
               JSON.stringify({
@@ -2343,10 +2456,26 @@ export default Plugin.define({
           ? OPTIONS_PROVIDER.id
           : undefined
       : "opencode"
-    const PICK_MODELS = normalizePickerModels(
-      o.models,
-      catalogId ? DECISION_INDEX[catalogId]?.models : undefined,
-    )
+    const ownCatalog = catalogId === "opencode-go" ? GO_DECISIONS : catalogId ? DECISION_INDEX[catalogId]?.models : undefined
+    const PICK_MODELS = normalizePickerModels(o.models, ownCatalog)
+    // A custom "models" option stays one flat list. Otherwise the deployment's
+    // own models come first (bare ids), then every other configured provider's
+    // decision models as "<provider>/<id>" in their own section.
+    const groupPicker = !o.models
+    const ownGroup = PICKER_PROVIDER_LABELS[catalogId ?? ""] ?? catalogId
+    const PICK_ROWS: Array<{ id: string; group?: string }> = [
+      ...PICK_MODELS.map((id) => (groupPicker ? { id, group: ownGroup } : { id })),
+      ...(groupPicker
+        ? [...DECISION_TARGETS].flatMap(([provider, target]) =>
+            provider === catalogId
+              ? []
+              : target.models.map((id) => ({
+                  id: `${provider}/${id}`,
+                  group: PICKER_PROVIDER_LABELS[provider] ?? provider,
+                })),
+          )
+        : []),
+    ]
 
     const setModelPin = async (sessionID: string, modelID: string): Promise<JevSetResult> => {
       const sid = typeof sessionID === "string" ? sessionID.trim() : ""
@@ -2515,7 +2644,7 @@ export default Plugin.define({
               const pin = sessionID ? await pinOf(sessionID) : undefined
               const info: JevModelsInfo = {
                 base: resolveModel(),
-                models: describeModelRows(PICK_MODELS, (id) => {
+                models: describeModelRows(PICK_ROWS, (id) => {
                   const cached = DEPLOY_VERDICTS.get(fingerprintOfModel(id))
                   return cached && !cached.ok ? cached.fault?.message : undefined
                 }),
@@ -2655,7 +2784,7 @@ export default Plugin.define({
                     ? { fault: primaryVerdict?.fault?.message ?? "deployment not checked yet" }
                     : {}),
                 },
-                models: describeModelRows(PICK_MODELS, (id) => {
+                models: describeModelRows(PICK_ROWS, (id) => {
                   const cached = DEPLOY_VERDICTS.get(fingerprintOfModel(id))
                   return cached && !cached.ok ? cached.fault?.message : undefined
                 }),

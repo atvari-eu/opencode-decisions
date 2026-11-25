@@ -694,6 +694,7 @@ export default {
           options: models.map((m: any) => ({
             title: m.id,
             value: m.id,
+            ...(typeof m.group === "string" && m.group ? { category: m.group } : {}),
             ...(m.fault ? { description: `no: ${m.fault}` } : {}),
           })),
           ...(actions ? { actions } : {}),

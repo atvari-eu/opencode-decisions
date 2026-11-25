@@ -188,6 +188,12 @@ async function runScenario(
         headers: { "content-type": "application/json" },
       })
     }
+    if (target.startsWith("https://opencode.ai/inference/go/v1/models")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
     FETCHES.push({
       url: target,
       auth: (init?.headers as any)?.Authorization,
