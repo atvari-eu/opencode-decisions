@@ -159,6 +159,12 @@ describe("/jev-models picker", () => {
     await harness.context.cleanup()
   })
 
+  test("the command takes no arguments so enter opens the dialog directly", async () => {
+    const harness = await setupCommand({ rpc: {}, dialog: true })
+    expect(harness.command.slash).toEqual({ name: "jev-models" })
+    await harness.context.cleanup()
+  })
+
   test("direct text pick pins the model, toasts success and writes the label", async () => {
     const harness = await setupCommand({ rpc: {}, dialog: true })
     sessionHolder.current = "s1"
@@ -260,7 +266,7 @@ describe("/jev-models picker", () => {
     harness.command.run("")
     await flush()
     expect(harness.toasts.at(-1)!.variant).toBe("warning")
-    expect(harness.toasts.at(-1)!.message).toContain('"/jev-models <model-id>"')
+    expect(harness.toasts.at(-1)!.message).toContain("dialog select surface")
     await harness.context.cleanup()
   })
 

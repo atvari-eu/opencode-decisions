@@ -107,7 +107,7 @@ interface TuiContext {
       readonly current?: () => { readonly name?: string } | undefined
     }
     /** Host versions with the model-style picker dialog (optional surface;
-     * /jev-models toasts the direct `/jev-models <id>` remedy when missing). */
+     * /jev-models toasts the remedy when missing). */
     readonly dialog?: {
       /** Resolves the picked option's value, or undefined on Escape/clear. */
       readonly select?: (options: SelectOptions) => Promise<string | undefined>
@@ -532,10 +532,14 @@ export default {
           id: "jev.model",
           title: "Switch System One model",
           description:
-            "Pin the System One judgment model for this session (/jev-models [<id>|reset]); every pick is verified against the deployment first",
+            "Pin the System One judgment model for this session; every pick is verified against the deployment first. Opens the model picker directly, like /models.",
           group: "jev",
           palette: true,
-          slash: { name: "jev-models", arguments: true },
+          // No arguments: pressing enter on the autocomplete runs this
+          // immediately (the host only keeps argument commands in the prompt),
+          // and it deletes the typed "/jev-models" token first, so one enter
+          // opens the picker - like the built-in /models.
+          slash: { name: "jev-models" },
           run: (input?: unknown) => {
             // Hosts pass the trailing text as a string, an object shape, or
             // nothing (palette); all degrade to the dialog.
@@ -582,7 +586,7 @@ export default {
     // model jev's judged calls use in THIS session only, riding over the
     // configured chain (plugin "model" option / JEV_MODEL). Every pick is
     // verified against the deployment by the server half (same ping the init
-    // check runs) before it sticks; ctrl+r or "/jev-models reset" clears the
+    // check runs) before it sticks; the picker's ctrl+r action clears the
     // pin. The footer marker updates instantly, so the model that actually
     // judges is always visible at the prompt.
     const labelStore = context.storage.store(JEV_MODEL_STORE_KEY, {
@@ -660,7 +664,7 @@ export default {
         }
         const dialog = (context as any).ui?.dialog as TuiContext["ui"]["dialog"]
         if (!dialog?.select) {
-          toastOf('picker dialog unavailable - use "/jev-models <model-id>" or /jev-models reset', "warning", 15_000)
+          toastOf("picker dialog unavailable - a newer OpenCode with the dialog select surface is needed to pick a model", "warning", 15_000)
           return
         }
         const info = await jev.describe({ sessionID })
